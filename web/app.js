@@ -26,6 +26,7 @@
     currentTime: $("#currentTime"),
     durationTime: $("#durationTime"),
     progressFill: $("#progressFill"),
+    progressTrack: $(".progress-track"),
     footerNote: $("#footerNote"),
     playBtn: $("#playBtn"),
     prevBtn: $("#prevBtn"),
@@ -1434,9 +1435,59 @@
     els.durationTime.textContent = formatTime(fragmentDuration);
     els.progressFill.style.width = fragmentDuration > 0 ? `${clamp(elapsed / fragmentDuration * 100, 0, 100)}%` : "0%";
 
-    if (duration > 0 && current >= duration - 0.08 && state.playing && !state.transitioning) {
+    // 拖动进度条期间不触发自动切歌
+    if (!seekActive && duration > 0 && current >= duration - 0.08 && state.playing && !state.transitioning) {
       nextTrack(1);
     }
+  }
+
+  // —— 进度条:点击跳转 / 按住拖动 ——
+  let seekActive = false;
+  let seekResumePlayback = false;
+  let lastSeekAt = 0;
+
+  /** 把事件位置换算为音频时间并跳转(考虑试听起点 startAt 偏移) */
+  function seekFromEvent(event) {
+    const rect = els.progressTrack.getBoundingClientRect();
+    const ratio = clamp((event.clientX - rect.left) / rect.width, 0, 1);
+    const audio = els.audio[state.activeDeck];
+    const track = state.tracks[state.currentIndex];
+    const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
+    const startAt = clamp(Number(track?.startAt) || 0, 0, duration || 1e9);
+    const fragmentDuration = Math.max(0, duration - startAt);
+    const target = startAt + ratio * fragmentDuration;
+    audio.currentTime = target;
+    els.currentTime.textContent = formatTime(Math.max(0, target - startAt));
+    els.progressFill.style.width = `${ratio * 100}%`;
+  }
+
+  function bindProgressSeek() {
+    const trackEl = els.progressTrack;
+    if (!trackEl) return;
+    trackEl.addEventListener("pointerdown", (event) => {
+      if (state.currentIndex < 0) return;
+      seekActive = true;
+      seekResumePlayback = state.playing;
+      // 拖动时先暂停,松手后从目标位置恢复,手感更稳
+      if (seekResumePlayback) els.audio[state.activeDeck].pause();
+      trackEl.setPointerCapture?.(event.pointerId);
+      seekFromEvent(event);
+    });
+    trackEl.addEventListener("pointermove", (event) => {
+      if (!seekActive) return;
+      const now = performance.now();
+      if (now - lastSeekAt < 100) return; // 拖动中节流,避免过度 seek
+      lastSeekAt = now;
+      seekFromEvent(event);
+    });
+    const finishSeek = (event) => {
+      if (!seekActive) return;
+      seekActive = false;
+      if (event) seekFromEvent(event);
+      if (seekResumePlayback) els.audio[state.activeDeck].play().catch(() => {});
+    };
+    trackEl.addEventListener("pointerup", (event) => finishSeek(event));
+    trackEl.addEventListener("pointercancel", () => finishSeek(null));
   }
 
   function bandEnergy(data, start, end) {
@@ -1958,6 +2009,7 @@
     els.spectrumRuler.innerHTML = Array.from({ length: state.spectrum.length }, () => "<i></i>").join("");
     state.spectrumBars = [...els.spectrumRuler.children];
     bindEvents();
+    bindProgressSeek();
     resizeCanvas();
     setSkin("stamp", false);
     requestVisualFrame(true);

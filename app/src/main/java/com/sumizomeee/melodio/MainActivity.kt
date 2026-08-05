@@ -100,6 +100,9 @@ class MainActivity : Activity() {
                             java.io.ByteArrayInputStream("ok".toByteArray())
                         )
                     }
+                    // 媒体 seek 依赖 HTTP Range 请求，WebViewAssetLoader 不支持 →
+                    // 自己处理 /assets/ 与 /import/ 的 Range，返回 206 + Content-Range
+                    handleRangeRequest(request)?.let { return it }
                     return assetLoader.shouldInterceptRequest(request.url)
                 }
             }
@@ -149,6 +152,59 @@ class MainActivity : Activity() {
             }
         }
         callback?.onReceiveValue(null)
+    }
+
+    /** 处理媒体 Range 请求（bytes=start-end），返回 206 + Content-Range，使 H5 进度条 seek 生效 */
+    private fun handleRangeRequest(request: android.webkit.WebResourceRequest): android.webkit.WebResourceResponse? {
+        val rangeHeader = request.requestHeaders?.get("Range") ?: return null
+        val path = request.url.path ?: return null
+        val assetPath = if (path.startsWith("/assets/")) path.removePrefix("/assets/") else null
+        val filePath = if (path.startsWith("/import/")) path.removePrefix("/import/") else null
+        if (assetPath == null && filePath == null) return null
+
+        val input: java.io.InputStream
+        val length: Long
+        try {
+            if (assetPath != null) {
+                input = assets.open(assetPath)
+                length = try { assets.openFd(assetPath).length } catch (e: Exception) { input.available().toLong() }
+            } else {
+                val file = File(importDir, filePath!!)
+                if (!file.exists()) return null
+                input = java.io.FileInputStream(file)
+                length = file.length()
+            }
+        } catch (e: Exception) {
+            return null
+        }
+
+        val m = RANGE_PATTERN.matchEntire(rangeHeader)
+        if (m == null) { input.close(); return null }
+        val start = m.groupValues[1].toLongOrNull() ?: run { input.close(); return null }
+        var end = m.groupValues[2].ifEmpty { "" }.toLongOrNull() ?: (length - 1)
+        end = end.coerceAtMost(length - 1)
+        if (start > end) { input.close(); return null }
+
+        // 跳转到 start（AssetInputStream.skip 单次可能跳不够，循环跳过）
+        var remaining = start
+        while (remaining > 0) {
+            val skipped = input.skip(remaining)
+            if (skipped <= 0) break
+            remaining -= skipped
+        }
+        val contentLength = end - start + 1
+        return android.webkit.WebResourceResponse(
+            MIME_MAP[path.substringAfterLast('.').lowercase()] ?: "application/octet-stream",
+            null,
+            206,
+            "Partial Content",
+            mapOf(
+                "Content-Range" to "bytes $start-$end/$length",
+                "Accept-Ranges" to "bytes",
+                "Content-Length" to contentLength.toString()
+            ),
+            input
+        )
     }
 
     /** 把用户选择的文件夹复制到应用私有目录 import/，供 WebView 以 /import/ 读取 */
@@ -264,5 +320,20 @@ class MainActivity : Activity() {
         private const val TAG = "Melodio"
         private const val REQUEST_PICK_TREE = 1001
         private const val IMPORT_DELETE_URL = "https://appassets.androidplatform.net/import/__delete__"
+        private val RANGE_PATTERN = Regex("""bytes=(\d+)-(\d*)""")
+        private val MIME_MAP = mapOf(
+            "mp3" to "audio/mpeg",
+            "wav" to "audio/wav",
+            "flac" to "audio/flac",
+            "ogg" to "audio/ogg",
+            "m4a" to "audio/mp4",
+            "aac" to "audio/aac",
+            "opus" to "audio/ogg",
+            "jpg" to "image/jpeg",
+            "jpeg" to "image/jpeg",
+            "png" to "image/png",
+            "webp" to "image/webp",
+            "gif" to "image/gif"
+        )
     }
 }

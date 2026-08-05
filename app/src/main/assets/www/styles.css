@@ -223,6 +223,12 @@ button { -webkit-tap-highlight-color: transparent; }
   height: 1px;
   background: var(--line);
   overflow: visible;
+  /* 扩大触摸/点击热区(上下各 13px),视觉仍为 1px 线 */
+  padding: 13px 0;
+  margin: -13px 0;
+  background-clip: content-box;
+  touch-action: none;
+  cursor: pointer;
 }
 .progress-track i {
   display: block;
