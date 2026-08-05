@@ -9,7 +9,6 @@ local.properties
 Thumbs.db
 
 # ===== 本地物料与产物（不入库，见 README） =====
-materials/
 output/
 local/
 dist/

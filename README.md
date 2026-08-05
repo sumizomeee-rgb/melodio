@@ -13,9 +13,10 @@ melodio/
 │     └─ assets/images/           内置封面(入库)
 ├─ web/                           H5 开发预览副本(浏览器直接打开 index.html 可调试)
 ├─ tools/cdp/                     CDP 调试辅助脚本(连接模拟器 WebView 调试端口)
-├─ materials/                     现场导入物料(不入库):专辑素材 + album.json + README
 ├─ output/apk/                    APK 交付产物(不入库)
-├─ local/                         本地归档/杂项(不入库)
+├─ local/                         全部本地不入库内容
+│  ├─ materials/                  现场导入物料(专辑素材 + album.json + README)
+│  └─ archive/                    交接期文档归档
 └─ reference/                     设计参考(原始视觉原型)
 ```
 
@@ -23,10 +24,10 @@ melodio/
 
 | 入库 | 不入库(gitignore) |
 |---|---|
-| 全部源码、H5、封面图片、web/、tools/、reference/、构建脚本 | `app/build/`、`local.properties`、`materials/`、`output/`、`local/`、**音频素材**(`assets/audio/`) |
+| 全部源码、H5、封面图片、web/、tools/、reference/、构建脚本 | `app/build/`、`local.properties`、`output/`、`local/`(含 materials/)、**音频素材**(`assets/audio/`) |
 
-> 音频不入库是刻意的:素材会持续增大,统一走本地 `materials/` 管理。
-> 克隆仓库后如需完整构建 APK,需从本地 `materials/` 或旧包中取回音频放回 `assets/audio/`。
+> 音频不入库是刻意的:素材会持续增大,统一走本地 `local/materials/` 管理。
+> 克隆仓库后如需完整构建 APK,需从本地 `local/materials/` 或旧包中取回音频放回 `assets/audio/`。
 
 ## 构建
 
@@ -49,4 +50,4 @@ cd /g/SuchProject/Other/melodio
 
 ## 现场设备导入
 
-`materials/README.md` 有完整的素材格式与导入说明(曲目命名规则、album.json 映射、设备导入方法)。
+`local/materials/README.md` 有完整的素材格式与导入说明(曲目命名规则、album.json 映射、设备导入方法)。

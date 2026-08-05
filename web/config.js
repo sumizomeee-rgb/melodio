@@ -71,13 +71,13 @@ window.MELODIO_ALBUMS = [
       },
       {
         audio: "assets/audio/05 龍行虎歩.mp3",
-        image: "assets/images/05 连曲 深夜差分睁眼.jpg",
+        image: "assets/images/连曲 半身裁剪.jpg",
         subtitle: "東の国　赤い土",
         kicker: "VOCALOID ORIGINAL"
       },
       {
         audio: "assets/audio/06 夢を埋めるんだ.mp3",
-        image: "assets/images/06 截左半身.jpg",
+        image: "assets/images/连曲 半身裁剪.jpg",
         subtitle: "いつも死に方を夢見て",
         kicker: "VOCALOID ORIGINAL"
       }

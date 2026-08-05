@@ -122,7 +122,6 @@
         <button id="albumOverviewBtn" type="button">专辑</button>
         <button id="loadFolderBtn" type="button">选择素材文件夹</button>
         <button id="mappingBtn" type="button">曲目设置 G</button>
-        <button id="demoBtn" type="button">载入《錦夢痕》</button>
         <button id="motionBtn" type="button">动效：丰富 M</button>
         <button id="cleanBtn" type="button">干净模式 H</button>
         <button id="fullscreenBtn" type="button">全屏 F</button>
@@ -134,13 +133,13 @@
 
     <section id="welcome" class="welcome-panel" aria-labelledby="welcomeTitle">
       <div class="welcome-card">
+        <button id="welcomeCloseBtn" class="welcome-close" type="button" aria-label="关闭">×</button>
         <span class="welcome-eyebrow">MELODIO · OFFLINE ALBUM SHOWCASE</span>
         <h2 id="welcomeTitle">Melodio 专辑现场展示器</h2>
         <div id="albumPicker" class="album-picker"></div>
         <p>选择一个包含歌曲和图片的文件夹。歌曲按 <b>01 歌名.wav</b> 命名，页面会直接显示“歌名”。图片可以少于歌曲，并可在“曲目设置”中逐首指定图片与试听起点。</p>
         <div class="welcome-actions">
           <button id="welcomeFolderBtn" class="primary" type="button">＋ 导入新专辑</button>
-          <button id="welcomeDemoBtn" type="button">载入演示</button>
         </div>
         <div class="format-tip">
           <code>01 歌名.wav</code><span>+</span><code>少图多歌也可用</code>

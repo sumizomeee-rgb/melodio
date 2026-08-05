@@ -33,7 +33,6 @@
     cleanBtn: $("#cleanBtn"),
     fullscreenBtn: $("#fullscreenBtn"),
     loadFolderBtn: $("#loadFolderBtn"),
-    demoBtn: $("#demoBtn"),
     motionBtn: $("#motionBtn"),
     mappingBtn: $("#mappingBtn"),
     mappingPanel: $("#mappingPanel"),
@@ -44,7 +43,7 @@
     exportMapBtn: $("#exportMapBtn"),
     welcome: $("#welcome"),
     welcomeFolderBtn: $("#welcomeFolderBtn"),
-    welcomeDemoBtn: $("#welcomeDemoBtn"),
+    welcomeCloseBtn: $("#welcomeCloseBtn"),
     albumPicker: $("#albumPicker"),
     albumOverviewBtn: $("#albumOverviewBtn"),
     controlDock: $(".control-dock"),
@@ -1868,9 +1867,7 @@
       catch (error) { showToast(error.message || String(error), 4200); }
     });
 
-    const demo = () => loadDemo().catch((error) => showToast(error.message || String(error), 4200));
-    els.demoBtn.addEventListener("click", demo);
-    els.welcomeDemoBtn.addEventListener("click", demo);
+    els.welcomeCloseBtn?.addEventListener("click", () => setWelcomeVisible(false));
     els.albumOverviewBtn?.addEventListener("click", openAlbumOverview);
     els.dockToggleLeft?.addEventListener("click", () => toggleDock());
     els.dockToggleRight?.addEventListener("click", () => toggleDock());
@@ -1909,7 +1906,7 @@
       togglePlay,
       selectTrack: selectTrackFromTouch,
       setSkin,
-      loadDemo: demo,
+      loadDemo: loadDemo,
       getPerformanceInfo: () => ({
         enabled: PERFORMANCE.enabled,
         android: PERFORMANCE.android,

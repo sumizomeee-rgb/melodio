@@ -1,6 +1,6 @@
 import sys, json, websocket, time
 
-WS = "ws://127.0.0.1:9222/devtools/page/8F64A889B6BAAFAF0FB2D195EB097E8C"
+WS = "ws://127.0.0.1:9222/devtools/page/FF95D35A9C5F74FE58F21A3556E7DCDB"
 
 def evaluate(expr, timeout=60):
     ws = websocket.create_connection(WS, timeout=timeout)
