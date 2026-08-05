@@ -1916,12 +1916,16 @@ html[data-performance="mobile"] body:not(.is-playing) .touch-track-row.is-active
   transition: background .18s ease, transform .18s ease;
 }
 .album-option:hover { background: rgba(255,255,255,.16); transform: translateY(-1px); }
+.album-option.is-selected { outline: 2px solid rgba(255,255,255,.85); background: rgba(255,255,255,.18); }
 .album-option-title { font: 600 20px/1.2 var(--display-font); letter-spacing: .04em; }
 .album-option-meta { font-size: 11px; letter-spacing: .08em; color: rgba(255,255,255,.5); }
 
 /* 专辑总览里的“导入的专辑”卡片 */
 .album-option.is-imported { border-style: dashed; border-color: rgba(255,255,255,.3); }
 .album-option.is-imported .album-option-title::before { content: "▣ "; opacity: .55; }
+
+/* 专辑总览选择/删除提示 */
+.album-hint { margin-top: 20px; color: rgba(255,255,255,.45); font-size: 11px; letter-spacing: .06em; }
 
 /* 专辑总览关闭按钮 */
 .welcome-card { position: relative; }
@@ -1942,20 +1946,3 @@ html[data-performance="mobile"] body:not(.is-playing) .touch-track-row.is-active
   z-index: 2;
 }
 .welcome-close:hover { background: rgba(255,255,255,.16); color: #fff; }
-
-/* 导入专辑卡片上的删除按钮 */
-.album-option { position: relative; }
-.album-option-delete {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  padding: 4px 10px;
-  border: 1px solid rgba(255,120,100,.4);
-  border-radius: 8px;
-  background: rgba(255,90,70,.12);
-  color: rgba(255,150,135,.85);
-  font-size: 11px;
-  letter-spacing: .06em;
-  cursor: pointer;
-}
-.album-option-delete:hover { background: rgba(255,90,70,.22); color: #ff9b88; }

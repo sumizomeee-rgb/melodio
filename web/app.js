@@ -1266,6 +1266,9 @@
     setTracks(tracks, config).catch((error) => showToast(error.message));
   }
 
+  /** 当前在专辑弹窗中选中的卡片：{kind: 'builtin'|'imported', el, title} */
+  let selectedAlbum = null;
+
   function showAlbumPicker(albums) {
     const picker = els.albumPicker;
     if (!picker || !Array.isArray(albums) || albums.length < 2) return;
@@ -1281,9 +1284,23 @@
     picker.querySelectorAll(".album-option").forEach((btn) => {
       btn.addEventListener("click", () => {
         const album = albums[Number(btn.dataset.albumIndex)];
-        if (album) loadStaticConfig(album);
+        if (!album) return;
+        const wasSelected = btn.classList.contains("is-selected");
+        selectAlbumCard(btn, "builtin", album.albumTitle || album.title || "");
+        // 再次点击已选中的卡片 → 载入该专辑
+        if (wasSelected) loadStaticConfig(album);
       });
     });
+  }
+
+  /** 单选:清掉其它卡片选中态,记录当前选中 */
+  function selectAlbumCard(el, kind, title) {
+    const picker = els.albumPicker;
+    if (picker) {
+      picker.querySelectorAll(".album-option.is-selected").forEach((c) => c.classList.remove("is-selected"));
+    }
+    el.classList.add("is-selected");
+    selectedAlbum = { kind, el, title };
   }
 
   function getAlbumLibrary() {
@@ -1293,9 +1310,9 @@
   }
 
   function openAlbumOverview() {
+    selectedAlbum = null;
     showAlbumPicker(getAlbumLibrary());
-    refreshDeleteButton();
-    // 若有已导入的专辑，追加一张“导入专辑”卡片，点击直接载入
+    // 若有已导入的专辑，追加一张“导入专辑”卡片
     const picker = els.albumPicker;
     if (picker && !picker.querySelector(".album-option.is-imported")) {
       fetch("/import/album.json")
@@ -1307,75 +1324,58 @@
           const btn = document.createElement("button");
           btn.type = "button";
           btn.className = "album-option is-imported";
-          btn.innerHTML = `<span class="album-option-title">${title}</span><span class="album-option-meta">导入专辑 · ${count} 首 · 点击载入</span><span class="album-option-delete" role="button" aria-label="删除导入专辑">删除</span>`;
-          btn.addEventListener("click", (event) => {
-            if (event.target.closest(".album-option-delete")) return;
-            loadImportedAlbum();
-          });
-          btn.querySelector(".album-option-delete").addEventListener("click", async (event) => {
-            event.stopPropagation();
-            btn.disabled = true;
-            try {
-              const resp = await fetch("/import/__delete__", { method: "POST" });
-              if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-              location.href = "https://appassets.androidplatform.net/assets/www/index.html";
-            } catch (error) {
-              showToast(`删除失败：${error.message}`, 4200);
-              btn.disabled = false;
-            }
+          btn.innerHTML = `<span class="album-option-title">${title}</span><span class="album-option-meta">导入专辑 · ${count} 首 · 再次点击载入</span>`;
+          btn.addEventListener("click", () => {
+            const wasSelected = btn.classList.contains("is-selected");
+            selectAlbumCard(btn, "imported", title);
+            // 再次点击已选中的卡片 → 载入该导入专辑
+            if (wasSelected) loadImportedAlbum();
           });
           picker.appendChild(btn);
-          refreshDeleteButton();
         })
         .catch(() => {});
     }
     setWelcomeVisible(true);
   }
 
-  /** 根据是否存在导入数据，标记「删除导入专辑」按钮是否可用 */
-  function refreshDeleteButton() {
-    const btn = els.welcomeDeleteBtn;
-    if (!btn) return;
-    btn.dataset.confirming = "";
-    btn.textContent = "删除导入专辑";
-    fetch("/import/album.json")
-      .then((resp) => { btn.dataset.available = resp.ok ? "1" : ""; })
-      .catch(() => { btn.dataset.available = ""; });
-  }
-
-  /** 删除导入专辑：无导入则提示；有导入需二次点击确认 */
-  async function handleDeleteImported() {
-    const btn = els.welcomeDeleteBtn;
-    if (!btn || !btn.dataset.available) {
-      showToast("当前没有导入的专辑", 2600);
+  /** 删除所选专辑：未选/内置/导入三种情况分别处理，导入需二次点击确认 */
+  function handleDeleteSelected() {
+    const sel = selectedAlbum;
+    if (!sel) {
+      showToast("请先选择要删除的专辑", 2600);
       return;
     }
+    if (sel.kind === "builtin") {
+      showToast(`「${sel.title}」是内置专辑，无法删除`, 3200);
+      return;
+    }
+    const btn = els.welcomeDeleteBtn;
     if (!btn.dataset.confirming) {
       btn.dataset.confirming = "1";
       btn.textContent = "确认删除?";
-      btn.classList.add("danger");
       setTimeout(() => {
         if (btn.dataset.confirming) {
           btn.dataset.confirming = "";
-          btn.textContent = "删除导入专辑";
+          btn.textContent = "删除所选专辑";
         }
       }, 5000);
       return;
     }
     btn.dataset.confirming = "";
     btn.disabled = true;
-    try {
-      const resp = await fetch("/import/__delete__", { method: "POST" });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      showToast("已删除导入专辑");
-      setTimeout(() => {
-        location.href = "https://appassets.androidplatform.net/assets/www/index.html";
-      }, 700);
-    } catch (error) {
-      showToast(`删除失败：${error.message}`, 4200);
-      btn.disabled = false;
-      btn.textContent = "删除导入专辑";
-    }
+    fetch("/import/__delete__", { method: "POST" })
+      .then((resp) => {
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        showToast("已删除导入专辑");
+        setTimeout(() => {
+          location.href = "https://appassets.androidplatform.net/assets/www/index.html";
+        }, 700);
+      })
+      .catch((error) => {
+        showToast(`删除失败：${error.message}`, 4200);
+        btn.disabled = false;
+        btn.textContent = "删除所选专辑";
+      });
   }
 
   function toggleDock(force) {
@@ -1810,7 +1810,7 @@
 
     els.loadFolderBtn.addEventListener("click", openFolder);
     els.welcomeFolderBtn.addEventListener("click", openFolder);
-    els.welcomeDeleteBtn?.addEventListener("click", handleDeleteImported);
+    els.welcomeDeleteBtn?.addEventListener("click", handleDeleteSelected);
     els.folderInput.addEventListener("change", async () => {
       if (!els.folderInput.files.length) return;
       try { await parseFolderFiles(els.folderInput.files); }
