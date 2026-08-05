@@ -1935,3 +1935,20 @@ html[data-performance="mobile"] body:not(.is-playing) .touch-track-row.is-active
   z-index: 2;
 }
 .welcome-close:hover { background: rgba(255,255,255,.16); color: #fff; }
+
+/* 导入专辑卡片上的删除按钮 */
+.album-option { position: relative; }
+.album-option-delete {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  padding: 4px 10px;
+  border: 1px solid rgba(255,120,100,.4);
+  border-radius: 8px;
+  background: rgba(255,90,70,.12);
+  color: rgba(255,150,135,.85);
+  font-size: 11px;
+  letter-spacing: .06em;
+  cursor: pointer;
+}
+.album-option-delete:hover { background: rgba(255,90,70,.22); color: #ff9b88; }

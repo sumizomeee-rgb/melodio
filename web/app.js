@@ -31,7 +31,6 @@
     prevBtn: $("#prevBtn"),
     nextBtn: $("#nextBtn"),
     cleanBtn: $("#cleanBtn"),
-    fullscreenBtn: $("#fullscreenBtn"),
     loadFolderBtn: $("#loadFolderBtn"),
     motionBtn: $("#motionBtn"),
     mappingBtn: $("#mappingBtn"),
@@ -855,18 +854,6 @@
     showToast(state.clean ? "已进入干净录制模式 · 按 H 恢复控制" : "已显示控制面板");
   }
 
-  async function toggleFullscreen() {
-    try {
-      if (!document.fullscreenElement) {
-        await els.app.requestFullscreen();
-      } else {
-        await document.exitFullscreen();
-      }
-    } catch (error) {
-      showToast(`全屏失败：${error.message || error}`);
-    }
-  }
-
   function recomputeArtGroups() {
     const groups = new Map();
     for (const track of state.tracks) {
@@ -1143,7 +1130,7 @@
       ...state.availableImages.flatMap((asset) => [asset.url, asset.backgroundUrl]),
       ...tracks.flatMap((track) => [track.image, track.backgroundImage])
     ]);
-    await loadTrack(0, { animate: false, autoplay: false });
+    await loadTrack(0, { animate: false, autoplay: true });
     showToast(`已载入 ${tracks.length} 首歌曲 · ${state.imageCount} 张视觉素材 · 图片与下一首音频已预热`, 3600);
   }
 
@@ -1257,107 +1244,6 @@
     }
   }
 
-  function createDemoWav(chord, variant = 0, duration = 16) {
-    const sampleRate = 22050;
-    const samples = Math.floor(sampleRate * duration);
-    const buffer = new ArrayBuffer(44 + samples * 2);
-    const view = new DataView(buffer);
-
-    const writeText = (offset, text) => {
-      for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i));
-    };
-    writeText(0, "RIFF");
-    view.setUint32(4, 36 + samples * 2, true);
-    writeText(8, "WAVE");
-    writeText(12, "fmt ");
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, 1, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate * 2, true);
-    view.setUint16(32, 2, true);
-    view.setUint16(34, 16, true);
-    writeText(36, "data");
-    view.setUint32(40, samples * 2, true);
-
-    let seed = 12345 + variant * 977;
-    const random = () => {
-      seed = (seed * 16807) % 2147483647;
-      return seed / 2147483647;
-    };
-
-    const bpm = 88 + variant * 7;
-    const beatRate = bpm / 60;
-    const arp = [0, 1, 2, 1, 0, 2, 1, 2];
-    for (let i = 0; i < samples; i++) {
-      const t = i / sampleRate;
-      const intro = Math.min(1, t / .8);
-      const outro = Math.min(1, (duration - t) / .9);
-      const envelope = clamp(intro * outro, 0, 1);
-      const beat = t * beatRate;
-      const beatPhase = beat % 1;
-      const halfPhase = (beat * 2) % 1;
-      const quarterPhase = (beat * 4) % 1;
-      const kickEnv = Math.exp(-beatPhase * 12);
-      const snareEnv = Math.exp(-(((beat + .5) % 1)) * 18);
-      const hatEnv = Math.exp(-quarterPhase * 28);
-      const noteIndex = arp[Math.floor(beat * 2) % arp.length];
-      const arpFreq = chord[noteIndex % chord.length] * (variant % 2 ? 2 : 1);
-      let value = 0;
-      chord.forEach((frequency, idx) => {
-        const wobble = 1 + Math.sin(t * .31 + idx) * .0025;
-        value += Math.sin(Math.PI * 2 * frequency * wobble * t + idx * .7) * (0.12 / (idx + 1));
-        value += Math.sin(Math.PI * 2 * frequency * 2.01 * t) * (0.025 / (idx + 1));
-      });
-      value += Math.sin(Math.PI * 2 * arpFreq * t) * Math.exp(-halfPhase * 5.5) * .10;
-      value += Math.sin(Math.PI * 2 * (48 + variant * 7 + 28 * Math.exp(-beatPhase * 16)) * t) * kickEnv * .24;
-      value += (random() * 2 - 1) * snareEnv * .07;
-      value += (random() * 2 - 1) * hatEnv * .025;
-      value += Math.sin(Math.PI * 2 * (chord[0] / 2) * t) * (.08 + kickEnv * .05);
-      value *= envelope * (.78 + .12 * Math.sin(t * .17));
-      view.setInt16(44 + i * 2, clamp(value, -.96, .96) * 32767, true);
-    }
-    return new Blob([buffer], { type: "audio/wav" });
-  }
-
-  async function loadDemo() {
-    revokeObjectUrls();
-    await initAudio();
-    const artOne = createProceduralArt(0, "錦夢痕");
-    const artTwo = createProceduralArt(2, "願いの軌跡");
-    const demoDefs = [
-      { title: "花漪", subtitle: "花影在水面展开，作为现场展示的第一段试听。", chord: [196, 246.94, 293.66], image: artOne, artIndex: 0 },
-      { title: "花延奏", subtitle: "同一视觉章节继续延展，让曲目切换保持统一。", chord: [174.61, 220, 329.63], image: artOne, artIndex: 0 },
-      { title: "遠地点", subtitle: "在最远处回望，频谱与唱片持续响应声音。", chord: [220, 277.18, 349.23], image: artOne, artIndex: 0 },
-      { title: "願いの軌跡", subtitle: "第二视觉章节接管后半张专辑。", chord: [146.83, 220, 277.18], image: artTwo, artIndex: 1 },
-      { title: "失くしたもの", subtitle: "现场展示用占位音频；交付前替换成正式母带。", chord: [164.81, 246.94, 311.13], image: artTwo, artIndex: 1 }
-    ];
-    const tracks = demoDefs.map((item, index) => {
-      const audio = URL.createObjectURL(createDemoWav(item.chord, index, 22));
-      state.objectUrls.push(audio);
-      return {
-        title: item.title,
-        subtitle: item.subtitle,
-        kicker: ["POSTAL MEMORY 01", "FLOWER EXTENSION 02", "DISTANT POINT 03", "WISH TRACE 04", "LOST OBJECT 05"][index],
-        audio,
-        image: item.image,
-        backgroundImage: item.image,
-        imageName: index < 3 ? "generated-art-01.svg" : "generated-art-02.svg",
-        artIndex: item.artIndex,
-        startAt: 0,
-        sourceName: `${pad(index + 1)} ${item.title}.wav`
-      };
-    });
-    await setTracks(tracks, {
-      albumTitle: "錦夢痕",
-      artist: "MELODIO SHOWCASE",
-      images: [
-        { name: "generated-art-01.svg", url: artOne, backgroundUrl: artOne },
-        { name: "generated-art-02.svg", url: artTwo, backgroundUrl: artTwo }
-      ]
-    });
-  }
-
   function loadStaticConfig(config) {
     config = config || window.ALBUM_CONFIG || {};
     if (!Array.isArray(config.tracks) || !config.tracks.length) return;
@@ -1419,8 +1305,23 @@
           const btn = document.createElement("button");
           btn.type = "button";
           btn.className = "album-option is-imported";
-          btn.innerHTML = `<span class="album-option-title">${title}</span><span class="album-option-meta">导入专辑 · ${count} 首 · 点击载入</span>`;
-          btn.addEventListener("click", () => loadImportedAlbum());
+          btn.innerHTML = `<span class="album-option-title">${title}</span><span class="album-option-meta">导入专辑 · ${count} 首 · 点击载入</span><span class="album-option-delete" role="button" aria-label="删除导入专辑">删除</span>`;
+          btn.addEventListener("click", (event) => {
+            if (event.target.closest(".album-option-delete")) return;
+            loadImportedAlbum();
+          });
+          btn.querySelector(".album-option-delete").addEventListener("click", async (event) => {
+            event.stopPropagation();
+            btn.disabled = true;
+            try {
+              const resp = await fetch("/import/__delete__", { method: "POST" });
+              if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+              location.href = "https://appassets.androidplatform.net/assets/www/index.html";
+            } catch (error) {
+              showToast(`删除失败：${error.message}`, 4200);
+              btn.disabled = false;
+            }
+          });
           picker.appendChild(btn);
         })
         .catch(() => {});
@@ -1468,7 +1369,6 @@
       });
     } catch (error) {
       showToast(`导入专辑加载失败：${error.message}`, 4200);
-      loadDemo().catch((e) => showToast(e.message || String(e), 4200));
     }
   }
 
@@ -1906,7 +1806,6 @@
       togglePlay,
       selectTrack: selectTrackFromTouch,
       setSkin,
-      loadDemo: loadDemo,
       getPerformanceInfo: () => ({
         enabled: PERFORMANCE.enabled,
         android: PERFORMANCE.android,
@@ -1934,7 +1833,6 @@
       if (event.target === els.mappingPanel) setMappingOpen(false);
     });
     els.cleanBtn.addEventListener("click", toggleClean);
-    els.fullscreenBtn.addEventListener("click", toggleFullscreen);
     $$('[data-set-skin]').forEach((button) => button.addEventListener("click", () => setSkin(button.dataset.setSkin)));
 
     document.addEventListener("keydown", (event) => {
@@ -1951,7 +1849,6 @@
       else if (key === "escape" && state.mappingOpen) setMappingOpen(false);
       else if (key === "h") toggleClean();
       else if (key === "m") cycleMotionMode();
-      else if (key === "f") toggleFullscreen();
       else if (key === "arrowdown" || key === "]") {
         if (!event.repeat) cycleSkin(1);
       }
@@ -2020,14 +1917,13 @@
       loadStaticConfig(albums[0]);
     } else if (params.get("imported") === "1") {
       loadImportedAlbum();
-    } else if (params.get("demo") === "1") {
-      loadDemo().catch((error) => showToast(error.message || String(error), 4200));
     } else if (albums.length === 1) {
       loadStaticConfig(albums[0]);
     } else if (albums.length > 1) {
       openAlbumOverview();
     } else {
-      loadDemo().catch((error) => showToast(error.message || String(error), 4200));
+      showToast("未配置内置专辑，请使用「＋ 导入新专辑」", 4200);
+      openAlbumOverview();
     }
   }
 

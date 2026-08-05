@@ -89,7 +89,19 @@ class MainActivity : Activity() {
                 override fun shouldInterceptRequest(
                     view: WebView,
                     request: android.webkit.WebResourceRequest
-                ) = assetLoader.shouldInterceptRequest(request.url)
+                ): android.webkit.WebResourceResponse? {
+                    val url = request.url.toString()
+                    // H5 侧的「删除导入专辑」：清空 import 目录并返回 200
+                    if (url.startsWith(IMPORT_DELETE_URL)) {
+                        importDir.deleteRecursively()
+                        return android.webkit.WebResourceResponse(
+                            "text/plain",
+                            "utf-8",
+                            java.io.ByteArrayInputStream("ok".toByteArray())
+                        )
+                    }
+                    return assetLoader.shouldInterceptRequest(request.url)
+                }
             }
         }
         setContentView(webView)
@@ -251,5 +263,6 @@ class MainActivity : Activity() {
     companion object {
         private const val TAG = "Melodio"
         private const val REQUEST_PICK_TREE = 1001
+        private const val IMPORT_DELETE_URL = "https://appassets.androidplatform.net/import/__delete__"
     }
 }
