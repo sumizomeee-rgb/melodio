@@ -1,9 +1,16 @@
-import sys, json, websocket
+import sys, json, urllib.request, websocket
 
-WS = "ws://127.0.0.1:9222/devtools/page/B821E4C5841EB4D0B86A42946A707237"
+def get_ws():
+    """从 /json 自动发现当前页面 target（重启 app 后 id 会变）"""
+    with urllib.request.urlopen("http://127.0.0.1:9222/json", timeout=10) as resp:
+        pages = json.load(resp)
+    for p in pages:
+        if p.get("type") == "page":
+            return p["webSocketDebuggerUrl"]
+    raise RuntimeError("no page target found")
 
 def evaluate(expr, timeout=30):
-    ws = websocket.create_connection(WS, timeout=timeout)
+    ws = websocket.create_connection(get_ws(), timeout=timeout)
     try:
         ws.send(json.dumps({
             "id": 1, "method": "Runtime.evaluate",

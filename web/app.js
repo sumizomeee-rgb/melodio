@@ -42,6 +42,7 @@
     exportMapBtn: $("#exportMapBtn"),
     welcome: $("#welcome"),
     welcomeFolderBtn: $("#welcomeFolderBtn"),
+    welcomeDeleteBtn: $("#welcomeDeleteBtn"),
     welcomeCloseBtn: $("#welcomeCloseBtn"),
     albumPicker: $("#albumPicker"),
     albumOverviewBtn: $("#albumOverviewBtn"),
@@ -1293,6 +1294,7 @@
 
   function openAlbumOverview() {
     showAlbumPicker(getAlbumLibrary());
+    refreshDeleteButton();
     // 若有已导入的专辑，追加一张“导入专辑”卡片，点击直接载入
     const picker = els.albumPicker;
     if (picker && !picker.querySelector(".album-option.is-imported")) {
@@ -1323,10 +1325,57 @@
             }
           });
           picker.appendChild(btn);
+          refreshDeleteButton();
         })
         .catch(() => {});
     }
     setWelcomeVisible(true);
+  }
+
+  /** 根据是否存在导入数据，标记「删除导入专辑」按钮是否可用 */
+  function refreshDeleteButton() {
+    const btn = els.welcomeDeleteBtn;
+    if (!btn) return;
+    btn.dataset.confirming = "";
+    btn.textContent = "删除导入专辑";
+    fetch("/import/album.json")
+      .then((resp) => { btn.dataset.available = resp.ok ? "1" : ""; })
+      .catch(() => { btn.dataset.available = ""; });
+  }
+
+  /** 删除导入专辑：无导入则提示；有导入需二次点击确认 */
+  async function handleDeleteImported() {
+    const btn = els.welcomeDeleteBtn;
+    if (!btn || !btn.dataset.available) {
+      showToast("当前没有导入的专辑", 2600);
+      return;
+    }
+    if (!btn.dataset.confirming) {
+      btn.dataset.confirming = "1";
+      btn.textContent = "确认删除?";
+      btn.classList.add("danger");
+      setTimeout(() => {
+        if (btn.dataset.confirming) {
+          btn.dataset.confirming = "";
+          btn.textContent = "删除导入专辑";
+        }
+      }, 5000);
+      return;
+    }
+    btn.dataset.confirming = "";
+    btn.disabled = true;
+    try {
+      const resp = await fetch("/import/__delete__", { method: "POST" });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      showToast("已删除导入专辑");
+      setTimeout(() => {
+        location.href = "https://appassets.androidplatform.net/assets/www/index.html";
+      }, 700);
+    } catch (error) {
+      showToast(`删除失败：${error.message}`, 4200);
+      btn.disabled = false;
+      btn.textContent = "删除导入专辑";
+    }
   }
 
   function toggleDock(force) {
@@ -1761,6 +1810,7 @@
 
     els.loadFolderBtn.addEventListener("click", openFolder);
     els.welcomeFolderBtn.addEventListener("click", openFolder);
+    els.welcomeDeleteBtn?.addEventListener("click", handleDeleteImported);
     els.folderInput.addEventListener("change", async () => {
       if (!els.folderInput.files.length) return;
       try { await parseFolderFiles(els.folderInput.files); }

@@ -554,6 +554,13 @@ body[data-clean="true"] .stage-footer { padding-bottom: 0; }
   cursor: pointer;
 }
 .welcome-actions button.primary { color: #121212; background: #f0eee8; border-color: transparent; font-weight: 700; }
+.welcome-actions button.danger {
+  color: #ff9b88;
+  border-color: rgba(255,120,100,.45);
+  background: rgba(255,90,70,.1);
+}
+.welcome-actions button.danger:hover:not(:disabled) { background: rgba(255,90,70,.2); }
+.welcome-actions button:disabled { opacity: .4; cursor: default; }
 .format-tip { margin-top: 22px; display: flex; gap: 10px; align-items: center; color: rgba(255,255,255,.4); font-size: 11px; }
 .format-tip code { padding: 6px 8px; border-radius: 7px; background: rgba(0,0,0,.28); color: rgba(255,255,255,.65); }
 .drop-overlay { opacity: 0; visibility: hidden; pointer-events: none; color: white; text-align: center; }
