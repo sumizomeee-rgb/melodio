@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <title>Melodio · Album Showcase</title>
+  <script>
+    (() => {
+      const params = new URLSearchParams(location.search);
+      const mode = (params.get("performance") || "auto").toLowerCase();
+      const android = /Android/i.test(navigator.userAgent || "");
+      const enabled = mode === "1" || mode === "on" || mode === "mobile" || (mode === "auto" && android);
+      document.documentElement.dataset.performance = enabled ? "mobile" : "full";
+    })();
+  </script>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body data-skin="stamp" data-clean="false">
+  <main id="app" class="app" aria-live="polite">
+    <canvas id="ambientCanvas" aria-hidden="true"></canvas>
+    <div class="ambient-noise" aria-hidden="true"></div>
+    <div class="background-image background-image-a" aria-hidden="true"></div>
+    <div class="background-image background-image-b" aria-hidden="true"></div>
+    <div class="background-veil" aria-hidden="true"></div>
+
+    <section class="stage" aria-label="专辑试听舞台">
+      <div class="stamp-decoration stamp-decoration-top">AIR MAIL · MUSIC ARCHIVE · 08 / 2026</div>
+      <div class="stamp-decoration stamp-decoration-side">PRIVATE LISTENING COPY</div>
+      <div class="film-perforation film-perforation-left" aria-hidden="true"></div>
+      <div class="film-perforation film-perforation-right" aria-hidden="true"></div>
+      <div class="glass-grid" aria-hidden="true"></div>
+      <div id="spectrumRuler" class="spectrum-ruler" aria-hidden="true"></div>
+      <div class="beat-halo" aria-hidden="true"></div>
+      <div class="scan-glint" aria-hidden="true"></div>
+
+      <header class="stage-header">
+        <div class="brand-block">
+          <span class="eyebrow">MELODIO · OFFLINE ALBUM SHOWCASE</span>
+          <h1 id="albumTitle">UNNAMED ALBUM</h1>
+          <span id="artistName" class="artist">YOUR NAME</span>
+        </div>
+        <div class="header-meta">
+          <span id="skinName">邮票档案</span>
+        </div>
+      </header>
+
+      <div class="composition">
+        <div class="art-shell" id="artShell">
+          <div class="vinyl-record" aria-hidden="true">
+            <div class="vinyl-disc-spin">
+              <div class="vinyl-grooves"></div>
+              <div class="vinyl-reflection"></div>
+              <div class="vinyl-label"><img id="vinylLabel" alt="" draggable="false" /></div>
+              <div class="vinyl-spindle"></div>
+            </div>
+          </div>
+          <div class="sleeve-shadow" aria-hidden="true"></div>
+          <div class="art-frame art-frame-a">
+            <img id="coverA" alt="当前歌曲图片" draggable="false" />
+          </div>
+          <div class="art-frame art-frame-b">
+            <img id="coverB" alt="下一首歌曲图片" draggable="false" />
+          </div>
+          <div class="sleeve-edge" aria-hidden="true"></div>
+          <div class="art-highlight" aria-hidden="true"></div>
+          <div class="art-caption">
+            <span id="archiveCode">ARCHIVE 001</span>
+            <span id="imageModeText">VINYL EDITION</span>
+          </div>
+        </div>
+
+        <div class="touch-album-panel" aria-label="曲目列表">
+          <div class="touch-album-heading">
+            <span class="touch-album-kicker">ALBUM / TRACK SELECT</span>
+            <h2 id="panelAlbumTitle">錦夢痕</h2>
+            <div class="touch-now-playing">
+              <span id="touchNowIndex">01</span>
+              <strong id="touchNowTitle">花漪</strong>
+            </div>
+          </div>
+          <div id="trackList" class="touch-track-list" role="listbox" aria-label="点击曲目切换歌曲"></div>
+          <div class="touch-hint">点按曲目播放 · 左右滑动封面切歌 · 点按封面暂停/继续</div>
+
+          <div class="legacy-track-copy" aria-hidden="true">
+            <span id="trackIndex">01</span><span id="trackTotal">/ 05</span>
+            <span id="trackKicker">LISTENING FRAGMENT</span>
+            <span id="trackTitle">花漪</span><span id="trackSubtitle"></span>
+            <span id="nextTrackTitle">花延奏</span>
+          </div>
+        </div>
+      </div>
+
+      <footer class="stage-footer">
+        <div class="progress-block">
+          <div class="progress-track"><i id="progressFill"></i></div>
+          <div class="time-row">
+            <span id="currentTime">00:00</span>
+            <span id="durationTime">00:00</span>
+          </div>
+        </div>
+        <div class="footer-note" id="footerNote">PRESS → TO CHANGE TRACK</div>
+      </footer>
+    </section>
+
+    <!-- 左下/右下隐形热区：点击显隐底部控制面板 -->
+    <button id="dockToggleLeft" class="dock-corner dock-corner-left" type="button" aria-label="显示控制面板"></button>
+    <button id="dockToggleRight" class="dock-corner dock-corner-right" type="button" aria-label="显示控制面板"></button>
+
+    <aside class="control-dock" aria-label="控制面板">
+      <div class="control-row primary-controls">
+        <button id="prevBtn" type="button" title="上一首（←）">←</button>
+        <button id="playBtn" class="play-button" type="button" title="播放 / 暂停（空格）">PLAY</button>
+        <button id="nextBtn" type="button" title="下一首（→）">→</button>
+      </div>
+      <div class="control-row skin-controls" role="group" aria-label="视觉皮肤">
+        <button type="button" data-set-skin="stamp" class="active">邮票档案</button>
+        <button type="button" data-set-skin="film">夜航胶片</button>
+        <button type="button" data-set-skin="glass">玻璃潮汐</button>
+      </div>
+      <div class="control-row utility-controls">
+        <button id="albumOverviewBtn" type="button">专辑</button>
+        <button id="loadFolderBtn" type="button">选择素材文件夹</button>
+        <button id="mappingBtn" type="button">曲目设置 G</button>
+        <button id="demoBtn" type="button">载入《錦夢痕》</button>
+        <button id="motionBtn" type="button">动效：丰富 M</button>
+        <button id="cleanBtn" type="button">干净模式 H</button>
+        <button id="fullscreenBtn" type="button">全屏 F</button>
+      </div>
+      <div class="shortcut-help">
+        <span>空格 播放</span><span>← / → 切歌</span><span>↑ / ↓ 换皮肤</span><span>G 曲目设置</span><span>M 动效强度</span><span>H 隐藏控制</span>
+      </div>
+    </aside>
+
+    <section id="welcome" class="welcome-panel" aria-labelledby="welcomeTitle">
+      <div class="welcome-card">
+        <span class="welcome-eyebrow">MELODIO · OFFLINE ALBUM SHOWCASE</span>
+        <h2 id="welcomeTitle">Melodio 专辑现场展示器</h2>
+        <div id="albumPicker" class="album-picker"></div>
+        <p>选择一个包含歌曲和图片的文件夹。歌曲按 <b>01 歌名.wav</b> 命名，页面会直接显示“歌名”。图片可以少于歌曲，并可在“曲目设置”中逐首指定图片与试听起点。</p>
+        <div class="welcome-actions">
+          <button id="welcomeFolderBtn" class="primary" type="button">＋ 导入新专辑</button>
+          <button id="welcomeDemoBtn" type="button">载入演示</button>
+        </div>
+        <div class="format-tip">
+          <code>01 歌名.wav</code><span>+</span><code>少图多歌也可用</code>
+        </div>
+      </div>
+    </section>
+
+
+    <section id="mappingPanel" class="mapping-panel" aria-hidden="true" aria-labelledby="mappingTitle">
+      <div class="mapping-card">
+        <header class="mapping-header">
+          <div>
+            <span class="mapping-eyebrow">TRACK · ARTWORK · START POINT</span>
+            <h2 id="mappingTitle">曲目与试听起点</h2>
+            <p>歌名固定读取音频文件名：<code>01 歌名.wav</code> → <b>歌名</b>。可逐首指定图片，并拖动“试听起点”决定切歌后从哪里开始播放。</p>
+          </div>
+          <button id="mappingCloseBtn" class="mapping-close" type="button" aria-label="关闭映射面板">×</button>
+        </header>
+        <div id="mappingList" class="mapping-list"></div>
+        <footer class="mapping-footer">
+          <button id="autoMapBtn" type="button">按连续章节自动分配</button>
+          <button id="resetStartsBtn" type="button">全部起点归零</button>
+          <button id="exportMapBtn" type="button">导出 album.json</button>
+          <span>快捷键 G 打开 / 关闭</span>
+        </footer>
+      </div>
+    </section>
+    <div id="dropOverlay" class="drop-overlay" aria-hidden="true">
+      <strong>放下歌曲与图片文件</strong>
+      <span>网页会按文件名前缀自动配对</span>
+    </div>
+
+    <div id="toast" class="toast" role="status"></div>
+    <input id="folderInput" type="file" webkitdirectory directory multiple hidden />
+    <audio id="audioA" preload="auto"></audio>
+    <audio id="audioB" preload="auto"></audio>
+    <audio id="previewAudio" preload="metadata"></audio>
+  </main>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
