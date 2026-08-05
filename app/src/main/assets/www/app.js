@@ -776,7 +776,7 @@
   async function togglePlay() {
     stopStartPreview();
     if (!state.tracks.length) {
-      showToast("请先选择素材文件夹或载入演示");
+      showToast("请先选择素材文件夹或导入专辑");
       return;
     }
     try {
