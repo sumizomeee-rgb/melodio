@@ -1246,52 +1246,47 @@
     }
   }
 
-  function loadStaticConfig(config) {
-    config = config || window.ALBUM_CONFIG || {};
-    if (!Array.isArray(config.tracks) || !config.tracks.length) return;
-    const tracks = config.tracks.map((item, index) => ({
-      title: item.audio ? titleFromFilename(item.audio.split("/").pop()) : (item.title || `Track ${pad(index + 1)}`),
-      subtitle: item.subtitle || item.lyric || "",
-      kicker: item.kicker || "CONFIGURED PERFORMANCE",
-      audio: item.audio,
-      image: item.image || createProceduralArt(index, item.title || `Track ${pad(index + 1)}`),
-      backgroundImage: item.backgroundImage || item.image || "",
-      imageName: item.image ? item.image.split("/").pop() : "",
-      sourceName: item.audio ? item.audio.split("/").pop() : `Track ${pad(index + 1)}`,
-      artIndex: Number.isFinite(Number(item.artIndex)) ? Number(item.artIndex) : undefined,
-      generatedArt: !item.image,
-      objectPosition: item.objectPosition || "",
-      variationIndex: Number.isFinite(Number(item.variation)) ? Number(item.variation) : undefined,
-      startAt: Number(item.startAt) || 0
-    }));
-    setTracks(tracks, config).catch((error) => showToast(error.message));
-  }
-
-  /** 当前在专辑弹窗中选中的卡片：{kind: 'builtin'|'imported', el, title} */
+  /** 当前在专辑弹窗中选中的卡片：{kind, el, title}（仅有「导入专辑」一种） */
   let selectedAlbum = null;
 
-  function showAlbumPicker(albums) {
+  function openAlbumOverview() {
+    selectedAlbum = null;
     const picker = els.albumPicker;
-    if (!picker || !Array.isArray(albums) || albums.length < 2) return;
-    picker.innerHTML = albums.map((album, index) => {
-      const title = album.albumTitle || album.title || `Album ${index + 1}`;
-      const artist = album.artist || "";
-      const count = Array.isArray(album.tracks) ? album.tracks.length : 0;
-      return `<button type="button" class="album-option" data-album-index="${index}">
-        <span class="album-option-title">${title}</span>
-        <span class="album-option-meta">${artist} · ${count} 首</span>
-      </button>`;
-    }).join("");
-    picker.querySelectorAll(".album-option").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const album = albums[Number(btn.dataset.albumIndex)];
-        if (!album) return;
-        const wasSelected = btn.classList.contains("is-selected");
-        selectAlbumCard(btn, "builtin", album.albumTitle || album.title || "");
-        // 再次点击已选中的卡片 → 载入该专辑
-        if (wasSelected) loadStaticConfig(album);
+    if (!picker) {
+      setWelcomeVisible(true);
+      return;
+    }
+    picker.replaceChildren();
+    // 已导入过的专辑以一张卡片显示(点选,再点一次载入)
+    fetch("/import/album.json")
+      .then((resp) => (resp.ok ? resp.json() : null))
+      .then((manifest) => {
+        if (!manifest || !Array.isArray(manifest.tracks) || !manifest.tracks.length) return;
+        const title = manifest.albumTitle || manifest.title || "导入的专辑";
+        const count = manifest.tracks.length;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "album-option is-imported";
+        btn.innerHTML = `<span class="album-option-title">${title}</span><span class="album-option-meta">导入专辑 · ${count} 首 · 再次点击载入</span>`;
+        btn.addEventListener("click", () => {
+          const wasSelected = btn.classList.contains("is-selected");
+          selectAlbumCard(btn, "imported", title);
+          // 再次点击已选中的卡片 → 载入该导入专辑
+          if (wasSelected) loadImportedAlbum();
+        });
+        picker.appendChild(btn);
+      })
+      .catch(() => {})
+      .finally(() => {
+        // 还没有任何专辑时显示空状态提示
+        if (!picker.children.length) {
+          const hint = document.createElement("div");
+          hint.className = "album-empty";
+          hint.textContent = "还没有专辑 · 点下方「＋ 导入新专辑」选择素材文件夹";
+          picker.appendChild(hint);
+        }
       });
-    });
+    setWelcomeVisible(true);
   }
 
   /** 单选:清掉其它卡片选中态,记录当前选中 */
@@ -1304,50 +1299,11 @@
     selectedAlbum = { kind, el, title };
   }
 
-  function getAlbumLibrary() {
-    return (Array.isArray(window.MELODIO_ALBUMS) && window.MELODIO_ALBUMS.length)
-      ? window.MELODIO_ALBUMS
-      : (Array.isArray(window.ALBUM_CONFIG?.tracks) && window.ALBUM_CONFIG.tracks.length ? [window.ALBUM_CONFIG] : []);
-  }
-
-  function openAlbumOverview() {
-    selectedAlbum = null;
-    showAlbumPicker(getAlbumLibrary());
-    // 若有已导入的专辑，追加一张“导入专辑”卡片
-    const picker = els.albumPicker;
-    if (picker && !picker.querySelector(".album-option.is-imported")) {
-      fetch("/import/album.json")
-        .then((resp) => (resp.ok ? resp.json() : null))
-        .then((manifest) => {
-          if (!manifest) return;
-          const title = manifest.albumTitle || manifest.title || "导入的专辑";
-          const count = Array.isArray(manifest.tracks) ? manifest.tracks.length : 0;
-          const btn = document.createElement("button");
-          btn.type = "button";
-          btn.className = "album-option is-imported";
-          btn.innerHTML = `<span class="album-option-title">${title}</span><span class="album-option-meta">导入专辑 · ${count} 首 · 再次点击载入</span>`;
-          btn.addEventListener("click", () => {
-            const wasSelected = btn.classList.contains("is-selected");
-            selectAlbumCard(btn, "imported", title);
-            // 再次点击已选中的卡片 → 载入该导入专辑
-            if (wasSelected) loadImportedAlbum();
-          });
-          picker.appendChild(btn);
-        })
-        .catch(() => {});
-    }
-    setWelcomeVisible(true);
-  }
-
-  /** 删除所选专辑：未选/内置/导入三种情况分别处理，导入需二次点击确认 */
+  /** 删除所选专辑(仅导入专辑一种,二次点击确认) */
   function handleDeleteSelected() {
     const sel = selectedAlbum;
     if (!sel) {
       showToast("请先选择要删除的专辑", 2600);
-      return;
-    }
-    if (sel.kind === "builtin") {
-      showToast(`「${sel.title}」是内置专辑，无法删除`, 3200);
       return;
     }
     const btn = els.welcomeDeleteBtn;
@@ -2037,17 +1993,11 @@
     setSkin("stamp", false);
     requestVisualFrame(true);
     const params = new URLSearchParams(location.search);
-    const albums = getAlbumLibrary();
-    if (params.get("blank") === "1") {
-      loadStaticConfig(albums[0]);
-    } else if (params.get("imported") === "1") {
+    // 所有专辑都来自安装后的外部导入：有导入 → 直接载入；没有 → 显示欢迎/导入面板
+    if (params.get("imported") === "1") {
       loadImportedAlbum();
-    } else if (albums.length === 1) {
-      loadStaticConfig(albums[0]);
-    } else if (albums.length > 1) {
-      openAlbumOverview();
     } else {
-      showToast("未配置内置专辑，请使用「＋ 导入新专辑」", 4200);
+      showToast("请先导入专辑：点「＋ 导入新专辑」选择素材文件夹", 4200);
       openAlbumOverview();
     }
   }

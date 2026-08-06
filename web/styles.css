@@ -1913,8 +1913,17 @@ html[data-performance="mobile"] body:not(.is-playing) .touch-track-row.is-active
   animation-play-state: paused !important;
 }
 
-/* 专辑选择器（内置多专辑时显示在欢迎面板） */
+/* 专辑选择器（外部导入的专辑显示在欢迎面板） */
 .album-picker { display: flex; flex-direction: column; gap: 10px; margin: 0 0 4px; }
+.album-empty {
+  padding: 24px 18px;
+  border: 1px dashed rgba(255,255,255,.2);
+  border-radius: 13px;
+  text-align: center;
+  color: rgba(255,255,255,.52);
+  font-size: 13px;
+  line-height: 1.7;
+}
 .album-option {
   display: flex;
   flex-direction: column;
