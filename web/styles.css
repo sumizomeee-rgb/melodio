@@ -221,12 +221,12 @@ button { -webkit-tap-highlight-color: transparent; }
 .progress-track {
   position: relative;
   /* 全局 box-sizing 是 border-box，这里必须改回 content-box，
-     否则 height 3px + padding 26px 会把内容区压成 0，轨道和进度线都不渲染 */
+     否则 height 1px + padding 26px 会把内容区压成 0，轨道和进度线都不渲染 */
   box-sizing: content-box;
-  height: 3px;
+  height: 1px; /* v0.5.8 加粗到 3px，现还原为最初 1px 细线（观感） */
   background: var(--track, rgba(255,255,255,.22));
   overflow: visible;
-  /* 扩大触摸/点击热区(上下各 13px),视觉为 3px 细线 */
+  /* 触摸/点击热区保持 27px(上下各 13px)，只影响交互不影响观感 */
   padding: 13px 0;
   margin: -13px 0;
   background-clip: content-box;
@@ -252,7 +252,12 @@ button { -webkit-tap-highlight-color: transparent; }
   border-radius: 50%;
   background: var(--accent);
   box-shadow: 0 0 0 2px rgba(0,0,0,.4), 0 0 12px rgba(0,0,0,.45);
+  /* 末端指针默认隐藏，仅按下/拖动进度条时显示 */
+  opacity: 0;
+  transition: opacity 150ms ease;
 }
+.progress-track.is-scrubbing i::after { opacity: 1; }
+.progress-track.is-scrubbing i { transition: none; }
 .time-row {
   display: flex;
   justify-content: space-between;

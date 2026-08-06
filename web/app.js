@@ -1504,6 +1504,7 @@
     trackEl.addEventListener("pointerdown", (event) => {
       if (state.currentIndex < 0) return;
       seekActive = true;
+      trackEl.classList.add("is-scrubbing"); // 拖动中显示末端指针
       trackEl.setPointerCapture?.(event.pointerId);
       seekFromEvent(event); // 点击 / 按下即跳一次
     });
@@ -1514,6 +1515,7 @@
     const finishSeek = (event) => {
       if (!seekActive) return;
       seekActive = false;
+      trackEl.classList.remove("is-scrubbing"); // 松手隐藏末端指针
       if (event) seekFromEvent(event); // 松手才做最终 seek
       // 兜底:正常拖动全程不 pause,只在「本该在播却停着」时补一次 play
       // (如正好点在上首曲子结尾、元素处于 ended 状态)
