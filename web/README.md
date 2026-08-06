@@ -1,6 +1,6 @@
 # Melodio Touch Showcase Handoff
 
-本目录已在 Album Preview Stage v1.5 上加入 Android 现场展示所需的右侧完整曲目列表、点击播放、封面滑动切歌、点按暂停/继续，以及《錦夢痕》内置生成音色演示。原始 v1.5 文档保留如下。
+本目录是 Melodio 的 H5 开发预览副本(浏览器直接打开 index.html 可调试)。App 不内置任何专辑,素材一律通过文件夹导入。以下为早期 Album Preview Stage 的原始文档存档。
 
 ---
 

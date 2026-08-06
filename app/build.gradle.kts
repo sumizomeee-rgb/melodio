@@ -15,8 +15,8 @@ android {
         applicationId = "com.sumizomeee.melodio"
         minSdk = 26
         targetSdk = 35
-        versionCode = 21
-        versionName = "0.5.15"
+        versionCode = 22
+        versionName = "0.5.16"
     }
 
     buildTypes {
