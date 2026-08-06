@@ -1,0 +1,103 @@
+name: Temporary ZhiYing WPF Build
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.zhiying-build-trigger/**'
+      - '.github/workflows/temporary-zhiying-wpf-build.yml'
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  build:
+    runs-on: windows-2022
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download source parts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force work | Out-Null
+          0..4 | ForEach-Object {
+            $name = "source.part{0:D2}" -f $_
+            $url = "https://raw.githubusercontent.com/sumizomeee-rgb/VideoToMP3/build/zhiying-wpf-v030-temp/zhiying-temp/$name"
+            Invoke-WebRequest -Uri $url -OutFile "work/$name"
+          }
+
+      - name: Reconstruct source
+        shell: pwsh
+        run: |
+          $parts = Get-ChildItem work/source.part* | Sort-Object Name
+          if ($parts.Count -ne 5) { throw "Expected 5 source parts, found $($parts.Count)." }
+          $b64 = ($parts | ForEach-Object { Get-Content $_.FullName -Raw }) -join ''
+          [IO.File]::WriteAllBytes('work/source.tgz', [Convert]::FromBase64String($b64))
+          $hash = (Get-FileHash work/source.tgz -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne 'e1f2f7b955a9dac8fc94497d410866f730d17f0df00ca4a2d0f3c0ad6d14e796') {
+            throw "Source archive checksum mismatch: $hash"
+          }
+          New-Item -ItemType Directory -Force work/src | Out-Null
+          tar -xzf work/source.tgz -C work/src
+
+          $xamlPath = 'work/src/ZhiYing/MainWindow.xaml'
+          $xaml = Get-Content $xamlPath -Raw
+          $xaml = $xaml.Replace('<Grid Grid.Row="0" Margin="20,0" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,0,1">', '<Grid Grid.Row="0" Margin="20,0">')
+          Set-Content -Path $xamlPath -Value $xaml -Encoding UTF8
+
+      - name: Restore and build
+        shell: pwsh
+        run: |
+          dotnet restore work/src/ZhiYing/ZhiYing.csproj
+          dotnet build work/src/ZhiYing/ZhiYing.csproj -c Release --no-restore
+
+      - name: Publish Windows x64
+        shell: pwsh
+        run: |
+          dotnet publish work/src/ZhiYing/ZhiYing.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -o work/publish
+
+      - name: Package
+        shell: pwsh
+        run: |
+          if (-not (Test-Path work/publish/ZhiYing.exe)) { throw 'ZhiYing.exe was not produced.' }
+          Copy-Item work/src/README.md work/publish/使用说明.md
+          "纸映 v0.3.0`r`nWindows x64 自包含单文件版`r`n构建提交: $env:GITHUB_SHA" | Set-Content -Encoding UTF8 work/publish/BUILD_INFO.txt
+          Compress-Archive -Path work/publish/* -DestinationPath work/ZhiYing-win-x64-v0.3.0.zip -Force
+          Compress-Archive -Path work/src/* -DestinationPath work/ZhiYing-source-v0.3.0.zip -Force
+          Get-FileHash work/ZhiYing-win-x64-v0.3.0.zip -Algorithm SHA256
+          Get-FileHash work/ZhiYing-source-v0.3.0.zip -Algorithm SHA256
+
+      - name: Upload packages
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force work/artifact-client | Out-Null
+          Push-Location work/artifact-client
+          npm init -y | Out-Null
+          npm install @actions/artifact@6.2.1 --no-audit --no-fund
+          @'
+          import path from 'node:path';
+          import { DefaultArtifactClient } from '@actions/artifact';
+
+          async function main() {
+            const root = path.resolve(process.cwd(), '..');
+            const files = [
+              path.join(root, 'ZhiYing-win-x64-v0.3.0.zip'),
+              path.join(root, 'ZhiYing-source-v0.3.0.zip')
+            ];
+            const client = new DefaultArtifactClient();
+            const result = await client.uploadArtifact('ZhiYing-v0.3.0', files, root, {
+              retentionDays: 7,
+              compressionLevel: 0
+            });
+            console.log(JSON.stringify(result));
+          }
+
+          main().catch(error => {
+            console.error(error);
+            process.exit(1);
+          });
+          '@ | Set-Content -Encoding UTF8 upload.mjs
+          node upload.mjs
+          Pop-Location
