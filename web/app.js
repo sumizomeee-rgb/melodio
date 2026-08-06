@@ -249,6 +249,10 @@
         gain.connect(analyser);
         sources.push(source);
         gains.push(gain);
+        // seek 真正落地后解除 pendingSeek 的 UI 保持,让真实播放位置接管
+        audio.addEventListener("seeked", () => {
+          if (pendingSeek && pendingSeek.audio === audio) pendingSeek = null;
+        });
       });
       analyser.connect(context.destination);
 
@@ -285,7 +289,9 @@
   function setAudioPosition(audio, track) {
     const startAt = clamp(Number(track.startAt) || 0, 0, Number.isFinite(audio.duration) ? Math.max(0, audio.duration - 0.05) : 1e9);
     try {
-      audio.currentTime = startAt;
+      // 位置已一致时跳过赋值:对 WebView 媒体管道而言,无谓的 currentTime 写入
+      // 也会触发一次解码器冲刷(几百毫秒的主线程占用),白白制造卡顿。
+      if (Math.abs(audio.currentTime - startAt) > 0.05) audio.currentTime = startAt;
     } catch (_) {
       // Metadata may still be loading; the loadedmetadata listener below retries.
     }
@@ -683,16 +689,14 @@
     requestVisualFrame(true);
     els.body.dataset.direction = direction >= 0 ? "next" : "prev";
 
-    // Both resources are ready before the visible switch. The next audio deck is normally
-    // already primed while the current song is playing, so this resolves immediately.
-    await Promise.all([
-      prepareAudioDeck(newDeck, normalized),
-      preloadImage(track.image),
-      preloadImage(track.backgroundImage || track.image)
-    ]);
-    if (token !== state.transitionToken) return;
-
     if (firstLoad || !animate) {
+      // 首次载入 / 无动画切换:没有过渡动画会被挡住,直接等音频与图片就绪再接管
+      await Promise.all([
+        prepareAudioDeck(newDeck, normalized),
+        preloadImage(track.image),
+        preloadImage(track.backgroundImage || track.image)
+      ]);
+      if (token !== state.transitionToken) return;
       state.currentIndex = normalized;
       state.activeDeck = newDeck;
       setImageImmediately(track.image, track, normalized);
@@ -702,6 +706,14 @@
       primeAdjacentAudio(normalized, 1);
       return;
     }
+
+    // 动画切歌:先把画面铺好,音频准备(含冷加载)放到后台并行——
+    // 避免目标曲目未预热时,等待解码器装载几百毫秒把画面冻住。
+    await Promise.all([
+      preloadImage(track.image),
+      preloadImage(track.backgroundImage || track.image)
+    ]);
+    if (token !== state.transitionToken) return;
 
     const previousTrack = state.tracks[state.currentIndex];
     const sharedArt = Boolean(previousTrack && previousTrack.image === track.image);
@@ -753,21 +765,45 @@
     visualFallback = window.setTimeout(finishVisualTransition, 520);
 
     if (autoplay) {
-      try {
-        await initAudio();
-        const now = state.audioContext.currentTime;
-        state.gains[newDeck].gain.cancelScheduledValues(now);
-        state.gains[oldDeck].gain.cancelScheduledValues(now);
-        state.gains[newDeck].gain.setValueAtTime(0, now);
-        state.gains[oldDeck].gain.setValueAtTime(state.gains[oldDeck].gain.value, now);
-        await newAudio.play();
-        state.gains[newDeck].gain.linearRampToValueAtTime(1, now + 0.24);
-        state.gains[oldDeck].gain.linearRampToValueAtTime(0, now + 0.22);
-      } catch (error) {
-        if (isAbortedPlayError(error)) return; // 快速切歌时 play() 被新操作打断,正常,静默
-        state.playing = false;
-        showToast(`无法播放：${error.message || error}`);
-      }
+      // 音频准备 + 起播放后台:快速连切时旧任务由 token 放弃,play() 被新操作
+      // 打断抛的 AbortError 由 isAbortedPlayError 静默吞掉,不弹错也不卡画面。
+      (async () => {
+        try {
+          await initAudio();
+          // 冷加载(目标曲目不在任一 deck 上)会让媒体管道占住主线程数百毫秒,
+          // 推迟到视觉过渡(≈360ms 动画 + 兜底 520ms)接近结束再干,
+          // 避免过渡动画中途卡帧;代价只是冷切换时音频稍晚起播。
+          // 相邻切歌的 deck 已预热,deckTrackIndices 命中,不延迟,照常立即起播。
+          if (state.deckTrackIndices[newDeck] !== normalized || !newAudio.src) {
+            await new Promise((resolve) => window.setTimeout(resolve, 220));
+          }
+          await prepareAudioDeck(newDeck, normalized);
+          if (token !== state.transitionToken) return;
+          const now = state.audioContext.currentTime;
+          state.gains[newDeck].gain.cancelScheduledValues(now);
+          state.gains[oldDeck].gain.cancelScheduledValues(now);
+          state.gains[newDeck].gain.setValueAtTime(0, now);
+          state.gains[oldDeck].gain.setValueAtTime(state.gains[oldDeck].gain.value, now);
+          await newAudio.play();
+          if (token !== state.transitionToken) return; // 播放期间又被切走,交给新任务接管
+          state.gains[newDeck].gain.linearRampToValueAtTime(1, now + 0.24);
+          state.gains[oldDeck].gain.linearRampToValueAtTime(0, now + 0.22);
+        } catch (error) {
+          if (isAbortedPlayError(error)) return; // 快速切歌时 play() 被新操作打断,正常,静默
+          state.playing = false;
+          showToast(`无法播放：${error.message || error}`);
+        }
+      })();
+    } else {
+      // 暂停状态下切歌:后台把目标曲目装好(同样错开冷加载的主线程占用),
+      // 按空格播放时目标曲目已就绪
+      const coldStagger = (async () => {
+        if (state.deckTrackIndices[newDeck] !== normalized || !newAudio.src) {
+          await new Promise((resolve) => window.setTimeout(resolve, 220));
+        }
+        await prepareAudioDeck(newDeck, normalized);
+      })();
+      coldStagger.catch(() => {});
     }
 
   }
@@ -1436,12 +1472,18 @@
 
   // 拖动进度条期间:updateProgress 不写 UI(避免与拖动预览抢),也不自动切歌
   let seekActive = false;
+  // 最近一次进度条 seek 的目标值:decoder 冲刷期间 audio.currentTime 仍是旧位置,
+  // updateProgress 用它把进度条钉在目标处,seeked 落地后由真实位置接管。
+  let pendingSeek = null;
 
   function updateProgress() {
     if (state.currentIndex < 0 || seekActive) return;
     const audio = els.audio[state.activeDeck];
     const track = state.tracks[state.currentIndex];
-    const current = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+    let current = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+    // seek 提交后解码器仍在冲刷:currentTime 还报旧位置,此时钉在目标值,
+    // 避免进度条短暂跳回旧位置;seeked 落地后 pendingSeek 清空,由真实位置接管。
+    if (pendingSeek && pendingSeek.audio === audio && audio.seeking) current = pendingSeek.target;
     const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
     const startAt = clamp(Number(track?.startAt) || 0, 0, duration || 1e9);
     const elapsed = Math.max(0, current - startAt);
@@ -1463,33 +1505,47 @@
   // state.playing 与 audio.paused 脱钩),表现为点一下进度条曲子就停了。
   // 拖动中也不再连发 seek:Android WebView 的媒体管道每次 seek 都要冲刷解码器,
   // 每秒十几次 seek 会让声音一顿一顿(快速拖更明显)。改为——
-  //   按下:seek 一次;拖动中:只挪 UI 预览,音频保持原样播放;松手:最终 seek 一次。
-  // 整段拖动只有两次 seek(按下 + 松手),不再产生任何听感卡顿。
+  //   按下:只预览 UI,不动音频;拖动中:继续挪 UI 预览;松手:最终 seek 一次。
+  // 整段拖动只有一次 seek,不再产生任何听感卡顿。
+  // seek 提交后解码器还要冲刷一阵,期间 audio.currentTime 仍报旧位置——
+  // 用 pendingSeek 把进度条钉在目标值,等 seeked 事件落地后由真实位置接管,
+  // 避免「进度条先跳回旧位置、再跳到目标」的错位闪烁。
 
-  /** 把事件位置换算为音频时间(考虑试听起点 startAt 偏移) */
-  function seekTargetFromEvent(event) {
+  /** 把事件位置换算为音频时间(考虑试听起点 startAt 偏移);ctx 固定为按下那一刻的轨道 */
+  function seekTargetFromEvent(event, ctx) {
     const rect = els.progressTrack.getBoundingClientRect();
     const ratio = clamp((event.clientX - rect.left) / rect.width, 0, 1);
-    const audio = els.audio[state.activeDeck];
-    const track = state.tracks[state.currentIndex];
-    const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
-    const startAt = clamp(Number(track?.startAt) || 0, 0, duration || 1e9);
-    const fragmentDuration = Math.max(0, duration - startAt);
-    return { target: startAt + ratio * fragmentDuration, ratio, startAt };
+    return { target: ctx.startAt + ratio * ctx.fragmentDuration, ratio, startAt: ctx.startAt };
   }
 
   /** 只更新进度条 UI(拖动中实时预览,不碰音频) */
-  function updateSeekUI(event) {
-    const { target, ratio, startAt } = seekTargetFromEvent(event);
+  function updateSeekUI(event, ctx) {
+    const { target, ratio, startAt } = seekTargetFromEvent(event, ctx);
     els.currentTime.textContent = formatTime(Math.max(0, target - startAt));
     els.progressFill.style.width = `${ratio * 100}%`;
   }
 
+  /** 提交 seek:设置音频位置,并把进度条钉在目标值直到 seeked 落地(带超时兜底) */
+  function applySeek(audio, target) {
+    try {
+      audio.currentTime = target;
+    } catch (_) {
+      return;
+    }
+    if (pendingSeek) clearTimeout(pendingSeek.timer);
+    pendingSeek = {
+      audio,
+      target,
+      timer: window.setTimeout(() => {
+        if (pendingSeek && pendingSeek.audio === audio) pendingSeek = null;
+      }, 1500)
+    };
+  }
+
   /** 真正 seek 音频并同步 UI */
-  function seekFromEvent(event) {
-    const { target, ratio, startAt } = seekTargetFromEvent(event);
-    const audio = els.audio[state.activeDeck];
-    audio.currentTime = target;
+  function seekFromEvent(event, ctx) {
+    const { target, ratio, startAt } = seekTargetFromEvent(event, ctx);
+    applySeek(ctx.audio, target);
     els.currentTime.textContent = formatTime(Math.max(0, target - startAt));
     els.progressFill.style.width = `${ratio * 100}%`;
   }
@@ -1497,22 +1553,41 @@
   function bindProgressSeek() {
     const trackEl = els.progressTrack;
     if (!trackEl) return;
+    // 记录按下那一刻的音频元素与时间基准:拖动途中 activeDeck 可能因切歌翻转,
+    // 松手 seek 必须落在「开始拖的那条轨道」上,否则会改到别的元素。
+    let seekCtx = null;
     trackEl.addEventListener("pointerdown", (event) => {
       if (state.currentIndex < 0) return;
       seekActive = true;
       trackEl.classList.add("is-scrubbing"); // 拖动中显示末端指针
       trackEl.setPointerCapture?.(event.pointerId);
-      seekFromEvent(event); // 点击 / 按下即跳一次
+      const audio = els.audio[state.activeDeck];
+      const track = state.tracks[state.currentIndex];
+      const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
+      const startAt = clamp(Number(track?.startAt) || 0, 0, duration || 1e9);
+      seekCtx = { audio, startAt, fragmentDuration: Math.max(0, duration - startAt) };
+      updateSeekUI(event, seekCtx); // 按下先预览,不 seek(松手才跳,整段交互只冲刷一次解码器)
     });
     trackEl.addEventListener("pointermove", (event) => {
-      if (!seekActive) return;
-      updateSeekUI(event); // 拖动中只挪 UI,音频保持原样
+      if (!seekActive || !seekCtx) return;
+      seekCtx.lastEvent = event; // 兜底:pointercancel 时落到最后的预览位置
+      updateSeekUI(event, seekCtx); // 拖动中只挪 UI,音频保持原样
     });
     const finishSeek = (event) => {
       if (!seekActive) return;
       seekActive = false;
       trackEl.classList.remove("is-scrubbing"); // 松手隐藏末端指针
-      if (event) seekFromEvent(event); // 松手才做最终 seek
+      if (seekCtx) {
+        if (event) {
+          seekFromEvent(event, seekCtx);
+        } else if (seekCtx.lastEvent) {
+          const { target, ratio, startAt } = seekTargetFromEvent(seekCtx.lastEvent, seekCtx);
+          applySeek(seekCtx.audio, target);
+          els.currentTime.textContent = formatTime(Math.max(0, target - startAt));
+          els.progressFill.style.width = `${ratio * 100}%`;
+        }
+      }
+      seekCtx = null;
       // 兜底:正常拖动全程不 pause,只在「本该在播却停着」时补一次 play
       // (如正好点在上首曲子结尾、元素处于 ended 状态)
       const audio = els.audio[state.activeDeck];
@@ -2028,9 +2103,15 @@
       }
     });
 
-    els.audio.forEach((audio) => audio.addEventListener("error", () => {
-      if (audio.error) showToast(`音频加载失败（代码 ${audio.error.code}）`);
-    }));
+    els.audio.forEach((audio, deckIndex) => {
+      audio.addEventListener("error", () => {
+        if (!audio.error) return;
+        // 换歌/预热时 src 被替换导致的加载中断是正常操作(abort),不打扰用户;
+        // 只在「正在播放的 deck 且不在切歌过渡中」报错才提示,真故障还会走 play() 的 toast。
+        if (deckIndex !== state.activeDeck || state.transitioning) return;
+        showToast(`音频加载失败（代码 ${audio.error.code}）`);
+      });
+    });
     els.previewAudio.addEventListener("ended", () => stopStartPreview());
     els.previewAudio.addEventListener("error", () => {
       if (els.previewAudio.error) showToast(`试听加载失败（代码 ${els.previewAudio.error.code}）`);
