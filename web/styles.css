@@ -220,10 +220,13 @@ button { -webkit-tap-highlight-color: transparent; }
 }
 .progress-track {
   position: relative;
-  height: 1px;
-  background: var(--line);
+  /* 全局 box-sizing 是 border-box，这里必须改回 content-box，
+     否则 height 3px + padding 26px 会把内容区压成 0，轨道和进度线都不渲染 */
+  box-sizing: content-box;
+  height: 3px;
+  background: var(--track, rgba(255,255,255,.22));
   overflow: visible;
-  /* 扩大触摸/点击热区(上下各 13px),视觉仍为 1px 线 */
+  /* 扩大触摸/点击热区(上下各 13px),视觉为 3px 细线 */
   padding: 13px 0;
   margin: -13px 0;
   background-clip: content-box;
@@ -231,28 +234,31 @@ button { -webkit-tap-highlight-color: transparent; }
   cursor: pointer;
 }
 .progress-track i {
+  position: relative;
   display: block;
   width: 0;
   height: 100%;
-  background: currentColor;
+  background: var(--accent);
   transition: width 120ms linear;
 }
 .progress-track i::after {
   content: "";
   position: absolute;
-  right: -2px;
-  top: -2px;
-  width: 5px;
-  height: 5px;
+  right: -5px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 11px;
+  height: 11px;
   border-radius: 50%;
-  background: currentColor;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px rgba(0,0,0,.4), 0 0 12px rgba(0,0,0,.45);
 }
 .time-row {
   display: flex;
   justify-content: space-between;
   margin-top: 8px;
-  font: 9px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
-  opacity: .55;
+  font: 11px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+  opacity: .72;
 }
 .footer-note { font-size: 9px; opacity: .48; }
 
@@ -270,6 +276,7 @@ body[data-skin="stamp"] {
   --surface: #dfd1b8;
   --surface-2: #f1e8d7;
   --line: rgba(37,32,25,.25);
+  --track: rgba(60,45,25,.32);
   --display-font: Georgia, "Songti SC", "Times New Roman", serif;
 }
 body[data-skin="stamp"] .stage {
@@ -331,6 +338,7 @@ body[data-skin="film"] {
   --surface: #11100f;
   --surface-2: #191715;
   --line: rgba(244,239,231,.2);
+  --track: rgba(255,255,255,.28);
   --display-font: "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
 }
 body[data-skin="film"] .stage {
@@ -391,6 +399,7 @@ body[data-skin="glass"] {
   --surface: #101820;
   --surface-2: rgba(255,255,255,.08);
   --line: rgba(220,245,245,.18);
+  --track: rgba(220,245,245,.28);
   --display-font: "Helvetica Neue", "PingFang SC", Arial, sans-serif;
 }
 body[data-skin="glass"] .stage {
