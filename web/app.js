@@ -464,6 +464,27 @@
     return new Promise((resolve) => canvas.toBlob(resolve, type, quality));
   }
 
+  /**
+   * createImageBitmap 的 imageOrientation 选项在旧 WebView(Chrome 91)上是未知枚举值，
+   * 传了会直接抛 TypeError,把整条缩图链路吞进 catch 回退到原图。
+   * 先探一次能力,支持才带上。
+   */
+  let bitmapOrientationSupport = null;
+  async function decodeBitmap(source) {
+    if (bitmapOrientationSupport === null) {
+      try {
+        const probe = await createImageBitmap(source, { imageOrientation: "from-image" });
+        bitmapOrientationSupport = true;
+        return probe;
+      } catch (_) {
+        bitmapOrientationSupport = false;
+      }
+    }
+    return bitmapOrientationSupport
+      ? createImageBitmap(source, { imageOrientation: "from-image" })
+      : createImageBitmap(source);
+  }
+
   async function renderImageVariant(bitmap, maxSide, quality) {
     const longest = Math.max(bitmap.width, bitmap.height);
     const scale = Math.min(1, maxSide / Math.max(1, longest));
@@ -494,7 +515,7 @@
     if (ext === "svg" || ext === "gif" || typeof createImageBitmap !== "function") return base;
 
     try {
-      const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+      const bitmap = await decodeBitmap(file);
       const [coverBlob, backgroundBlob] = await Promise.all([
         renderImageVariant(bitmap, 1800, 0.94),
         renderImageVariant(bitmap, 640, 0.82)
@@ -514,6 +535,66 @@
       return base;
     } catch (_) {
       return base;
+    }
+  }
+
+  /**
+   * 把一个图片 URL 压成「1800px 封面 + 640px 背景」两份 WebP，返回 blob: URL。
+   *
+   * 导入专辑此前直接用 /import/ 原图：现场素材常是 5000px+ 的曲绘(实测 6144×3456 PNG,
+   * 单张 40MB),每次换图切歌都要重新解码 200~460ms,过渡动画中途必掉帧(实测断帧 617ms)。
+   * 预先转成 1800px WebP 后解码降到 ~98ms,换图与同图切歌的开销拉平。
+   * 转码本身一次性(每张约 1.5s),放在载入阶段做,不影响现场操作。
+   */
+  async function downscaleRemoteImage(url) {
+    const ext = extension(url.split("?")[0]);
+    // SVG 是矢量、GIF 有动画,都不该被压平;没有 createImageBitmap 的环境直接放弃
+    if (!url || url.startsWith("data:") || ext === "svg" || ext === "gif") return null;
+    if (typeof createImageBitmap !== "function") return null;
+
+    try {
+      const response = await fetch(url);
+      if (!response.ok) return null;
+      const bitmap = await decodeBitmap(await response.blob());
+      const [coverBlob, backgroundBlob] = await Promise.all([
+        renderImageVariant(bitmap, 1800, 0.94),
+        renderImageVariant(bitmap, 640, 0.82)
+      ]);
+      if (typeof bitmap.close === "function") bitmap.close();
+      if (!coverBlob) return null;
+
+      const coverUrl = URL.createObjectURL(coverBlob);
+      state.objectUrls.push(coverUrl);
+      let backgroundUrl = coverUrl;
+      if (backgroundBlob) {
+        backgroundUrl = URL.createObjectURL(backgroundBlob);
+        state.objectUrls.push(backgroundUrl);
+      }
+      return { url: coverUrl, backgroundUrl };
+    } catch (_) {
+      return null; // 转码失败就退回原图,不影响可用性
+    }
+  }
+
+  /** 对整张曲目表里出现过的 /import/ 图片统一降采样,并回填 image/backgroundImage */
+  async function downscaleTrackImages(tracks) {
+    const sources = [...new Set(tracks.map((track) => track.image).filter(
+      (url) => url && !url.startsWith("data:")
+    ))];
+    if (!sources.length) return;
+
+    showToast(`正在压缩 ${sources.length} 张视觉素材…`, 2400);
+    const mapping = new Map();
+    // 串行:每张转码本身就吃满主线程,并发只会让单次长任务更长
+    for (const source of sources) {
+      const variant = await downscaleRemoteImage(source);
+      if (variant) mapping.set(source, variant);
+    }
+    for (const track of tracks) {
+      const variant = mapping.get(track.image);
+      if (!variant) continue;
+      track.image = variant.url;
+      track.backgroundImage = variant.backgroundUrl;
     }
   }
 
@@ -1412,6 +1493,7 @@
             startAt: Number(item.startAt) || 0
           };
         });
+        await downscaleTrackImages(tracks);
         await setTracks(tracks, {
           albumTitle: manifest.albumTitle || manifest.title || "IMPORTED ALBUM",
           artist: manifest.artist || "IMPORTED"
@@ -1460,6 +1542,7 @@
           startAt: 0
         };
       });
+      await downscaleTrackImages(tracks);
       await setTracks(tracks, {
         albumTitle: listing.title || "导入专辑",
         artist: "IMPORTED"

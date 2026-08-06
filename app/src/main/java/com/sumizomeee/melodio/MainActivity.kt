@@ -179,7 +179,20 @@ class MainActivity : Activity() {
         callback?.onReceiveValue(null)
     }
 
-    /** 处理媒体 Range 请求（bytes=start-end），返回 206 + Content-Range，使 H5 进度条 seek 生效 */
+    /**
+     * 处理媒体 Range 请求（bytes=start-end），返回 206 + Content-Range，使 H5 进度条 seek 生效。
+     *
+     * 关键：**流本身必须从 0 开始，不能自己 skip 到 start**。
+     * WebView 拿到 shouldInterceptRequest 返回的流后，会依据我们给的 Content-Range
+     * 自行丢弃前 start 个字节。若我们再 skip 一次，实际读到的数据来自 2×start ——
+     * 实测请求 offset=1,000,000 拿回的是 2,000,000 处的字节（比例恒为 2.0）。
+     * 后果：seek 到的音频内容全部错位，且过半后 2×start 越过文件尾，解复用器读空报
+     * PIPELINE_ERROR_READ(FFmpegDemuxer: data source error)，元素永远卡在 seeking，
+     * 表现为「4 分多的歌播到 2:33 就停死」（2:33 ≈ 时长的一半）。
+     *
+     * 因此这里只负责：给出正确的 206 状态与 Content-Range/Content-Length 头，
+     * 外加一个上界受限（到 end 为止）的流，偏移交给 WebView 完成。
+     */
     private fun handleRangeRequest(request: android.webkit.WebResourceRequest): android.webkit.WebResourceResponse? {
         val rangeHeader = request.requestHeaders?.get("Range") ?: return null
         val path = request.url.path ?: return null
@@ -187,37 +200,41 @@ class MainActivity : Activity() {
         val filePath = if (path.startsWith("/import/")) path.removePrefix("/import/") else null
         if (assetPath == null && filePath == null) return null
 
-        val input: java.io.InputStream
+        // 先只解析 Range，拿到长度前不开流，避免解析失败时漏关
+        val m = RANGE_PATTERN.matchEntire(rangeHeader.trim()) ?: return null
+        val start = m.groupValues[1].toLongOrNull() ?: return null
+
         val length: Long
+        val open: () -> java.io.InputStream
         try {
+            // request.url.path 已是解码后的路径（Uri.getPath()），不能再 decode，
+            // 否则文件名里的字面量 % 会被二次解码。
             if (assetPath != null) {
-                input = assets.open(assetPath)
-                length = try { assets.openFd(assetPath).length } catch (e: Exception) { input.available().toLong() }
+                length = assets.openFd(assetPath).use { it.length }
+                open = { assets.open(assetPath) }
             } else {
                 val file = File(importDir, filePath!!)
                 if (!file.exists()) return null
-                input = java.io.FileInputStream(file)
                 length = file.length()
+                open = { java.io.FileInputStream(file) }
             }
         } catch (e: Exception) {
+            // 压缩存放的 asset 拿不到 openFd 长度等情况：交回 assetLoader 走全量 200
+            Log.w(TAG, "Range: cannot size $path", e)
             return null
         }
 
-        val m = RANGE_PATTERN.matchEntire(rangeHeader)
-        if (m == null) { input.close(); return null }
-        val start = m.groupValues[1].toLongOrNull() ?: run { input.close(); return null }
-        var end = m.groupValues[2].ifEmpty { "" }.toLongOrNull() ?: (length - 1)
-        end = end.coerceAtMost(length - 1)
-        if (start > end) { input.close(); return null }
+        if (length <= 0L || start >= length) return null
+        var end = m.groupValues[2].toLongOrNull() ?: (length - 1)
+        end = end.coerceIn(start, length - 1)
 
-        // 跳转到 start（AssetInputStream.skip 单次可能跳不够，循环跳过）
-        var remaining = start
-        while (remaining > 0) {
-            val skipped = input.skip(remaining)
-            if (skipped <= 0) break
-            remaining -= skipped
+        val input = try {
+            open()
+        } catch (e: Exception) {
+            Log.w(TAG, "Range: cannot open $path", e)
+            return null
         }
-        val contentLength = end - start + 1
+
         return android.webkit.WebResourceResponse(
             MIME_MAP[path.substringAfterLast('.').lowercase()] ?: "application/octet-stream",
             null,
@@ -226,10 +243,47 @@ class MainActivity : Activity() {
             mapOf(
                 "Content-Range" to "bytes $start-$end/$length",
                 "Accept-Ranges" to "bytes",
-                "Content-Length" to contentLength.toString()
+                "Content-Length" to (end - start + 1).toString()
             ),
-            input
+            // 从 0 开始、到 end 截止：WebView 负责丢弃前 start 字节
+            BoundedInputStream(input, end + 1)
         )
+    }
+
+    /** 只允许读取前 [limit] 个字节的包装流（配合 WebView 自身的 Range 偏移使用） */
+    private class BoundedInputStream(
+        private val delegate: java.io.InputStream,
+        private val limit: Long
+    ) : java.io.InputStream() {
+        private var position = 0L
+
+        override fun read(): Int {
+            if (position >= limit) return -1
+            val b = delegate.read()
+            if (b >= 0) position++
+            return b
+        }
+
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+            if (position >= limit) return -1
+            val allowed = minOf(len.toLong(), limit - position).toInt()
+            if (allowed <= 0) return -1
+            val n = delegate.read(b, off, allowed)
+            if (n > 0) position += n
+            return n
+        }
+
+        override fun skip(n: Long): Long {
+            val allowed = minOf(n, limit - position)
+            if (allowed <= 0) return 0
+            val skipped = delegate.skip(allowed)
+            if (skipped > 0) position += skipped
+            return skipped
+        }
+
+        override fun available(): Int = minOf(delegate.available().toLong(), limit - position).toInt()
+
+        override fun close() = delegate.close()
     }
 
     /** 把用户选择的文件夹复制到应用私有目录 import/，供 WebView 以 /import/ 读取 */
