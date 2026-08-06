@@ -1422,8 +1422,11 @@
     }
   }
 
+  // 拖动进度条期间:updateProgress 不写 UI(避免与拖动预览抢),也不自动切歌
+  let seekActive = false;
+
   function updateProgress() {
-    if (state.currentIndex < 0) return;
+    if (state.currentIndex < 0 || seekActive) return;
     const audio = els.audio[state.activeDeck];
     const track = state.tracks[state.currentIndex];
     const current = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
@@ -1446,11 +1449,13 @@
   // 之前是「按下暂停 → seek → 松手 play」,在 Android WebView 上 fast tap 时
   // play() 会落在 seek 未完成的管道上,把元素卡死在 HAVE_METADATA(时间冻结、
   // state.playing 与 audio.paused 脱钩),表现为点一下进度条曲子就停了。
-  let seekActive = false;
-  let lastSeekAt = 0;
+  // 拖动中也不再连发 seek:Android WebView 的媒体管道每次 seek 都要冲刷解码器,
+  // 每秒十几次 seek 会让声音一顿一顿(快速拖更明显)。改为——
+  //   按下:seek 一次;拖动中:只挪 UI 预览,音频保持原样播放;松手:最终 seek 一次。
+  // 整段拖动只有两次 seek(按下 + 松手),不再产生任何听感卡顿。
 
-  /** 把事件位置换算为音频时间并跳转(考虑试听起点 startAt 偏移) */
-  function seekFromEvent(event) {
+  /** 把事件位置换算为音频时间(考虑试听起点 startAt 偏移) */
+  function seekTargetFromEvent(event) {
     const rect = els.progressTrack.getBoundingClientRect();
     const ratio = clamp((event.clientX - rect.left) / rect.width, 0, 1);
     const audio = els.audio[state.activeDeck];
@@ -1458,7 +1463,20 @@
     const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
     const startAt = clamp(Number(track?.startAt) || 0, 0, duration || 1e9);
     const fragmentDuration = Math.max(0, duration - startAt);
-    const target = startAt + ratio * fragmentDuration;
+    return { target: startAt + ratio * fragmentDuration, ratio, startAt };
+  }
+
+  /** 只更新进度条 UI(拖动中实时预览,不碰音频) */
+  function updateSeekUI(event) {
+    const { target, ratio, startAt } = seekTargetFromEvent(event);
+    els.currentTime.textContent = formatTime(Math.max(0, target - startAt));
+    els.progressFill.style.width = `${ratio * 100}%`;
+  }
+
+  /** 真正 seek 音频并同步 UI */
+  function seekFromEvent(event) {
+    const { target, ratio, startAt } = seekTargetFromEvent(event);
+    const audio = els.audio[state.activeDeck];
     audio.currentTime = target;
     els.currentTime.textContent = formatTime(Math.max(0, target - startAt));
     els.progressFill.style.width = `${ratio * 100}%`;
@@ -1471,19 +1489,16 @@
       if (state.currentIndex < 0) return;
       seekActive = true;
       trackEl.setPointerCapture?.(event.pointerId);
-      seekFromEvent(event);
+      seekFromEvent(event); // 点击 / 按下即跳一次
     });
     trackEl.addEventListener("pointermove", (event) => {
       if (!seekActive) return;
-      const now = performance.now();
-      if (now - lastSeekAt < 100) return; // 拖动中节流,避免过度 seek
-      lastSeekAt = now;
-      seekFromEvent(event);
+      updateSeekUI(event); // 拖动中只挪 UI,音频保持原样
     });
     const finishSeek = (event) => {
       if (!seekActive) return;
       seekActive = false;
-      if (event) seekFromEvent(event);
+      if (event) seekFromEvent(event); // 松手才做最终 seek
       // 兜底:正常拖动全程不 pause,只在「本该在播却停着」时补一次 play
       // (如正好点在上首曲子结尾、元素处于 ended 状态)
       const audio = els.audio[state.activeDeck];
@@ -1875,6 +1890,10 @@
     els.albumOverviewBtn?.addEventListener("click", openAlbumOverview);
     els.dockToggleLeft?.addEventListener("click", () => toggleDock());
     els.dockToggleRight?.addEventListener("click", () => toggleDock());
+    // 点击控制面板自身的黑色背景(非按钮区域)也关闭面板
+    els.controlDock?.addEventListener("click", (event) => {
+      if (event.target instanceof Element && !event.target.closest("button")) toggleDock(false);
+    });
 
     els.trackList?.addEventListener("click", (event) => {
       const row = event.target.closest("[data-track-index]");
