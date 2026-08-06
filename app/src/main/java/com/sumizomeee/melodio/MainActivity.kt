@@ -100,6 +100,25 @@ class MainActivity : Activity() {
                             java.io.ByteArrayInputStream("ok".toByteArray())
                         )
                     }
+                    // H5 侧「无 album.json 的素材自动配对」：返回 import 目录文件清单 + 专辑名(文件夹名)
+                    if (url.startsWith(IMPORT_LIST_URL)) {
+                        val files = if (importDir.exists()) {
+                            importDir.walkTopDown()
+                                .filter { it.isFile }
+                                .map { it.relativeTo(importDir).path.replace('\\', '/') }
+                                .toList()
+                        } else emptyList()
+                        val json = buildString {
+                            append("{\"title\":\"").append(escapeJson(readMetaTitle() ?: "")).append("\",\"files\":[")
+                            append(files.joinToString(",") { "\"" + escapeJson(it) + "\"" })
+                            append("]}")
+                        }
+                        return android.webkit.WebResourceResponse(
+                            "application/json",
+                            "utf-8",
+                            java.io.ByteArrayInputStream(json.toByteArray())
+                        )
+                    }
                     // 媒体 seek 依赖 HTTP Range 请求，WebViewAssetLoader 不支持 →
                     // 自己处理 /assets/ 与 /import/ 的 Range，返回 206 + Content-Range
                     handleRangeRequest(request)?.let { return it }
@@ -110,8 +129,10 @@ class MainActivity : Activity() {
         setContentView(webView)
 
         if (BuildConfig.DEBUG) WebView.setWebContentsDebuggingEnabled(true)
-        // 已导入过素材（files/import/album.json 存在）→ 直接进入导入专辑；否则进入内置专辑库
-        val url = if (File(importDir, "album.json").exists()) {
+        // 已导入过素材(import 目录里有音频)→ 直接进入导入专辑;否则进入欢迎/导入页
+        val hasImportedAudio = importDir.exists()
+            && importDir.listFiles()?.any { it.isFile && it.extension.lowercase() in AUDIO_EXTS } == true
+        val url = if (hasImportedAudio) {
             "https://appassets.androidplatform.net/assets/www/index.html?imported=1&performance=auto"
         } else {
             "https://appassets.androidplatform.net/assets/www/index.html"
@@ -137,6 +158,10 @@ class MainActivity : Activity() {
             thread {
                 try {
                     copyImportedFiles(treeUri)
+                    // 记住所选文件夹名，作为无 album.json 时的专辑名
+                    queryTreeDisplayName(treeUri)?.let { name ->
+                        File(importDir, ".meta").writeText("""{"title":"${escapeJson(name)}"}""")
+                    }
                     runOnUiThread {
                         Toast.makeText(this, "素材导入完成", Toast.LENGTH_SHORT).show()
                         webView.loadUrl(
@@ -211,16 +236,44 @@ class MainActivity : Activity() {
     private fun copyImportedFiles(treeUri: Uri) {
         if (importDir.exists()) importDir.deleteRecursively()
         importDir.mkdirs()
-        val audioExts = setOf("mp3", "wav", "flac", "ogg", "m4a", "aac", "opus")
-        val imageExts = setOf("jpg", "jpeg", "png", "webp", "gif", "avif", "bmp")
         var audioCount = 0
         var imageCount = 0
-        copyTree(treeUri, null, "", audioExts, imageExts) { isAudio, isImage ->
+        copyTree(treeUri, null, "", AUDIO_EXTS, IMAGE_EXTS) { isAudio, isImage ->
             if (isAudio) audioCount++ else if (isImage) imageCount++
         }
         Log.i(TAG, "Import complete: $audioCount audio, $imageCount images")
         if (audioCount == 0) throw IllegalStateException("文件夹中没有音频文件（mp3/wav/flac/ogg/m4a）")
     }
+
+    /** 查询所选文件夹的显示名（DocumentsUI 树根文档的 _display_name） */
+    private fun queryTreeDisplayName(treeUri: Uri): String? {
+        return try {
+            val docId = DocumentsContract.getTreeDocumentId(treeUri)
+            val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
+            contentResolver.query(
+                docUri,
+                arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+                null, null, null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) cursor.getString(0) else null
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "queryTreeDisplayName failed", e)
+            null
+        }
+    }
+
+    /** 读取导入时记住的文件夹名（files/import/.meta），每次现读避免缓存旧值 */
+    private fun readMetaTitle(): String? {
+        return try {
+            File(importDir, ".meta").readText()
+                .let { text -> Regex("\"title\"\\s*:\\s*\"([^\"]*)\"").find(text)?.groupValues?.get(1) }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun escapeJson(s: String) = s.replace("\\", "\\\\").replace("\"", "\\\"")
 
     /** 递归枚举目录树并复制音频/图片/album.json（保留中文文件名与子目录结构） */
     private fun copyTree(
@@ -320,6 +373,9 @@ class MainActivity : Activity() {
         private const val TAG = "Melodio"
         private const val REQUEST_PICK_TREE = 1001
         private const val IMPORT_DELETE_URL = "https://appassets.androidplatform.net/import/__delete__"
+        private const val IMPORT_LIST_URL = "https://appassets.androidplatform.net/import/__list__"
+        private val AUDIO_EXTS = setOf("mp3", "wav", "flac", "ogg", "m4a", "aac", "opus")
+        private val IMAGE_EXTS = setOf("jpg", "jpeg", "png", "webp", "gif", "avif", "bmp")
         private val RANGE_PATTERN = Regex("""bytes=(\d+)-(\d*)""")
         private val MIME_MAP = mapOf(
             "mp3" to "audio/mpeg",

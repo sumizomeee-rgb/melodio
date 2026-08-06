@@ -1257,24 +1257,35 @@
       return;
     }
     picker.replaceChildren();
+    const appendImportedCard = (title, count) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "album-option is-imported";
+      btn.innerHTML = `<span class="album-option-title">${title}</span><span class="album-option-meta">导入专辑 · ${count} 首 · 再次点击载入</span>`;
+      btn.addEventListener("click", () => {
+        const wasSelected = btn.classList.contains("is-selected");
+        selectAlbumCard(btn, "imported", title);
+        // 再次点击已选中的卡片 → 载入该导入专辑
+        if (wasSelected) loadImportedAlbum();
+      });
+      picker.appendChild(btn);
+    };
     // 已导入过的专辑以一张卡片显示(点选,再点一次载入)
     fetch("/import/album.json")
       .then((resp) => (resp.ok ? resp.json() : null))
       .then((manifest) => {
-        if (!manifest || !Array.isArray(manifest.tracks) || !manifest.tracks.length) return;
-        const title = manifest.albumTitle || manifest.title || "导入的专辑";
-        const count = manifest.tracks.length;
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "album-option is-imported";
-        btn.innerHTML = `<span class="album-option-title">${title}</span><span class="album-option-meta">导入专辑 · ${count} 首 · 再次点击载入</span>`;
-        btn.addEventListener("click", () => {
-          const wasSelected = btn.classList.contains("is-selected");
-          selectAlbumCard(btn, "imported", title);
-          // 再次点击已选中的卡片 → 载入该导入专辑
-          if (wasSelected) loadImportedAlbum();
-        });
-        picker.appendChild(btn);
+        if (manifest && Array.isArray(manifest.tracks) && manifest.tracks.length) {
+          appendImportedCard(manifest.albumTitle || manifest.title || "导入的专辑", manifest.tracks.length);
+          return;
+        }
+        // 没有 album.json 的导入(纯素材自动配对)→ 用素材清单生成卡片
+        return fetch("/import/__list__")
+          .then((resp) => (resp.ok ? resp.json() : null))
+          .then((listing) => {
+            if (!listing || !Array.isArray(listing.files)) return;
+            const audioCount = listing.files.filter((name) => AUDIO_EXT.has(extension(name))).length;
+            if (audioCount) appendImportedCard(listing.title || "导入的专辑", audioCount);
+          });
       })
       .catch(() => {})
       .finally(() => {
@@ -1342,37 +1353,86 @@
 
   async function loadImportedAlbum() {
     try {
-      const resp = await fetch("/import/album.json");
-      if (!resp.ok) throw new Error("找不到 album.json");
-      const manifest = await resp.json();
-      const manifestTracks = Array.isArray(manifest.tracks) ? manifest.tracks : [];
-      if (!manifestTracks.length) throw new Error("album.json 中没有曲目信息");
+      // 1) 有 album.json:以清单为准(专辑名/作者/配图/试听起点/副标题)
+      let manifest = null;
+      try {
+        const resp = await fetch("/import/album.json");
+        if (resp.ok) manifest = await resp.json();
+      } catch (_) {}
+      if (manifest && Array.isArray(manifest.tracks) && manifest.tracks.length) {
+        const tracks = manifest.tracks.map((item, index) => {
+          const audioPath = String(item.audio || item.file || item.filename || "");
+          const imagePath = String(item.image || item.art || item.cover || "");
+          const title = item.title || (audioPath ? titleFromFilename(audioPath.split("/").pop()) : `Track ${pad(index + 1)}`);
+          return {
+            title,
+            subtitle: item.subtitle || item.lyric || "",
+            kicker: item.kicker || "IMPORTED ALBUM",
+            audio: audioPath ? "/import/" + audioPath.replace(/^\//, "") : "",
+            image: imagePath ? "/import/" + imagePath.replace(/^\//, "") : createProceduralArt(index, title),
+            backgroundImage: imagePath ? "/import/" + imagePath.replace(/^\//, "") : "",
+            imageName: imagePath ? imagePath.split("/").pop() : "",
+            sourceName: audioPath ? audioPath.split("/").pop() : `Track ${pad(index + 1)}`,
+            artIndex: Number.isFinite(Number(item.artIndex)) ? Number(item.artIndex) : undefined,
+            generatedArt: !imagePath,
+            objectPosition: item.objectPosition || "",
+            variationIndex: Number.isFinite(Number(item.variation)) ? Number(item.variation) : undefined,
+            startAt: Number(item.startAt) || 0
+          };
+        });
+        await setTracks(tracks, {
+          albumTitle: manifest.albumTitle || manifest.title || "IMPORTED ALBUM",
+          artist: manifest.artist || "IMPORTED"
+        });
+        return;
+      }
 
-      const tracks = manifestTracks.map((item, index) => {
-        const audioPath = String(item.audio || item.file || item.filename || "");
-        const imagePath = String(item.image || item.art || item.cover || "");
-        const title = item.title || (audioPath ? titleFromFilename(audioPath.split("/").pop()) : `Track ${pad(index + 1)}`);
+      // 2) 没有 album.json:用素材清单按文件名前缀自动配对(与网页端文件夹导入同一套规则)
+      let listing = null;
+      try {
+        const resp = await fetch("/import/__list__");
+        if (resp.ok) listing = await resp.json();
+      } catch (_) {}
+      if (!listing || !Array.isArray(listing.files)) throw new Error("找不到 album.json 或素材清单");
+      const audioNames = listing.files.filter((name) => AUDIO_EXT.has(extension(name))).sort(naturalCompare);
+      const imageNames = listing.files.filter((name) => IMAGE_EXT.has(extension(name))).sort(naturalCompare);
+      if (!audioNames.length) throw new Error("文件夹中没有音频文件");
+      const chapters = imageNames.length < audioNames.length;
+      const tracks = audioNames.map((name, index) => {
+        let artIndex = 0;
+        if (imageNames.length) {
+          if (chapters) {
+            // 图片少于歌曲:按连续章节分配
+            artIndex = Math.min(imageNames.length - 1, Math.floor(index * imageNames.length / audioNames.length));
+          } else {
+            // 按前缀序号配对(01 歌名.wav ↔ 01 图.jpg);配不上就顺位取图
+            const key = pairingKey(name);
+            const exact = imageNames.find((img) => pairingKey(img) === key);
+            artIndex = exact != null ? imageNames.indexOf(exact) : Math.min(index, imageNames.length - 1);
+          }
+        }
+        const title = titleFromFilename(name) || stem(name);
+        const image = imageNames.length ? "/import/" + imageNames[artIndex] : createProceduralArt(index, title);
         return {
           title,
-          subtitle: item.subtitle || item.lyric || "",
-          kicker: item.kicker || "IMPORTED ALBUM",
-          audio: audioPath ? "/import/" + audioPath.replace(/^\//, "") : "",
-          image: imagePath ? "/import/" + imagePath.replace(/^\//, "") : createProceduralArt(index, title),
-          backgroundImage: imagePath ? "/import/" + imagePath.replace(/^\//, "") : "",
-          imageName: imagePath ? imagePath.split("/").pop() : "",
-          sourceName: audioPath ? audioPath.split("/").pop() : `Track ${pad(index + 1)}`,
-          artIndex: Number.isFinite(Number(item.artIndex)) ? Number(item.artIndex) : undefined,
-          generatedArt: !imagePath,
-          objectPosition: item.objectPosition || "",
-          variationIndex: Number.isFinite(Number(item.variation)) ? Number(item.variation) : undefined,
-          startAt: Number(item.startAt) || 0
+          subtitle: "",
+          kicker: "IMPORTED ALBUM",
+          audio: "/import/" + name,
+          image,
+          backgroundImage: imageNames.length ? image : "",
+          imageName: imageNames.length ? imageNames[artIndex] : "",
+          sourceName: name,
+          artIndex,
+          generatedArt: !imageNames.length,
+          objectPosition: "",
+          startAt: 0
         };
       });
-
       await setTracks(tracks, {
-        albumTitle: manifest.albumTitle || manifest.title || "IMPORTED ALBUM",
-        artist: manifest.artist || "IMPORTED"
+        albumTitle: listing.title || "导入专辑",
+        artist: "IMPORTED"
       });
+      if (!imageNames.length) showToast("未找到图片：已为每首歌生成程序化视觉底图", 4200);
     } catch (error) {
       showToast(`导入专辑加载失败：${error.message}`, 4200);
     }
