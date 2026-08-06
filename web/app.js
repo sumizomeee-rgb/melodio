@@ -1442,8 +1442,11 @@
   }
 
   // —— 进度条:点击跳转 / 按住拖动 ——
+  // 注意:拖动/点击期间不暂停音频,直接对播放中的元素 seek(播放器标准做法)。
+  // 之前是「按下暂停 → seek → 松手 play」,在 Android WebView 上 fast tap 时
+  // play() 会落在 seek 未完成的管道上,把元素卡死在 HAVE_METADATA(时间冻结、
+  // state.playing 与 audio.paused 脱钩),表现为点一下进度条曲子就停了。
   let seekActive = false;
-  let seekResumePlayback = false;
   let lastSeekAt = 0;
 
   /** 把事件位置换算为音频时间并跳转(考虑试听起点 startAt 偏移) */
@@ -1467,9 +1470,6 @@
     trackEl.addEventListener("pointerdown", (event) => {
       if (state.currentIndex < 0) return;
       seekActive = true;
-      seekResumePlayback = state.playing;
-      // 拖动时先暂停,松手后从目标位置恢复,手感更稳
-      if (seekResumePlayback) els.audio[state.activeDeck].pause();
       trackEl.setPointerCapture?.(event.pointerId);
       seekFromEvent(event);
     });
@@ -1484,7 +1484,10 @@
       if (!seekActive) return;
       seekActive = false;
       if (event) seekFromEvent(event);
-      if (seekResumePlayback) els.audio[state.activeDeck].play().catch(() => {});
+      // 兜底:正常拖动全程不 pause,只在「本该在播却停着」时补一次 play
+      // (如正好点在上首曲子结尾、元素处于 ended 状态)
+      const audio = els.audio[state.activeDeck];
+      if (state.playing && audio.paused) audio.play().catch(() => {});
     };
     trackEl.addEventListener("pointerup", (event) => finishSeek(event));
     trackEl.addEventListener("pointercancel", () => finishSeek(null));
@@ -1907,6 +1910,7 @@
       togglePlay,
       selectTrack: selectTrackFromTouch,
       setSkin,
+      cycleSkin,
       getPerformanceInfo: () => ({
         enabled: PERFORMANCE.enabled,
         android: PERFORMANCE.android,

@@ -289,8 +289,8 @@ class MainActivity : Activity() {
                 KeyEvent.KEYCODE_SPACE,
                 KeyEvent.KEYCODE_ENTER,
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> "window.Melodio?.togglePlay()"
-                KeyEvent.KEYCODE_DPAD_UP -> "window.Melodio?.setSkin('stamp')"
-                KeyEvent.KEYCODE_DPAD_DOWN -> "window.Melodio?.setSkin('glass')"
+                KeyEvent.KEYCODE_DPAD_UP -> "window.Melodio?.cycleSkin(1)"
+                KeyEvent.KEYCODE_DPAD_DOWN -> "window.Melodio?.cycleSkin(-1)"
                 else -> null
             }
             if (script != null) {
