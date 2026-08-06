@@ -40,7 +40,6 @@
     mappingCloseBtn: $("#mappingCloseBtn"),
     autoMapBtn: $("#autoMapBtn"),
     resetStartsBtn: $("#resetStartsBtn"),
-    exportMapBtn: $("#exportMapBtn"),
     welcome: $("#welcome"),
     welcomeFolderBtn: $("#welcomeFolderBtn"),
     welcomeDeleteBtn: $("#welcomeDeleteBtn"),
@@ -1065,29 +1064,6 @@
     showToast("已按连续章节重新分配图片");
   }
 
-  function exportMapping() {
-    if (!state.tracks.length) return;
-    const data = {
-      albumTitle: state.albumMeta.albumTitle || state.albumMeta.title || els.albumTitle.textContent,
-      artist: state.albumMeta.artist || els.artistName.textContent,
-      imagePolicy: "manual",
-      tracks: state.tracks.map((track) => ({
-        audio: track.sourceName || "",
-        image: track.imageName || "",
-        startAt: Number(track.startAt) || 0,
-        objectPosition: track.objectPosition || undefined
-      }))
-    };
-    const clean = JSON.stringify(data, (key, value) => value === undefined ? undefined : value, 2);
-    const url = URL.createObjectURL(new Blob([clean], { type: "application/json" }));
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = "album.json";
-    anchor.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    showToast("已导出 album.json，放回素材文件夹即可保留图片映射与试听起点");
-  }
-
   async function setTracks(tracks, meta = {}) {
     if (!tracks.length) throw new Error("没有找到可播放的歌曲文件");
 
@@ -1970,7 +1946,6 @@
     els.mappingCloseBtn.addEventListener("click", () => setMappingOpen(false));
     els.autoMapBtn.addEventListener("click", () => autoMapImages().catch((error) => showToast(error.message || String(error))));
     els.resetStartsBtn.addEventListener("click", resetAllStartPoints);
-    els.exportMapBtn.addEventListener("click", exportMapping);
     els.mappingPanel.addEventListener("click", (event) => {
       if (event.target === els.mappingPanel) setMappingOpen(false);
     });
