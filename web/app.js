@@ -204,6 +204,11 @@
     return title || base;
   }
 
+  /** play() 被后续 pause()/换歌打断时浏览器抛 AbortError,属正常竞态,不应提示用户 */
+  function isAbortedPlayError(error) {
+    return Boolean(error && error.name === "AbortError");
+  }
+
   function showToast(message, duration = 2400) {
     clearTimeout(state.toastTimer);
     els.toast.textContent = message;
@@ -393,7 +398,13 @@
     await audioReady(preview, 2400);
     const startAt = clamp(Number(track.startAt) || 0, 0, duration > 0 ? Math.max(0, duration - 0.05) : 1e9);
     try { preview.currentTime = startAt; } catch (_) {}
-    await preview.play();
+    try {
+      await preview.play();
+    } catch (error) {
+      if (isAbortedPlayError(error)) return; // 试听被停止/切行打断,正常,静默
+      showToast(`试听失败：${error.message || error}`);
+      return;
+    }
     state.previewTrackIndex = trackIndex;
     $$(".start-preview-button").forEach((button) => {
       const active = Number(button.dataset.trackIndex) === trackIndex;
@@ -753,6 +764,7 @@
         state.gains[newDeck].gain.linearRampToValueAtTime(1, now + 0.24);
         state.gains[oldDeck].gain.linearRampToValueAtTime(0, now + 0.22);
       } catch (error) {
+        if (isAbortedPlayError(error)) return; // 快速切歌时 play() 被新操作打断,正常,静默
         state.playing = false;
         showToast(`无法播放：${error.message || error}`);
       }
@@ -768,7 +780,14 @@
     state.gains[oldDeck].gain.cancelScheduledValues(now);
     state.gains[deck].gain.setValueAtTime(immediate ? 1 : 0, now);
     if (oldDeck !== deck) state.gains[oldDeck].gain.setValueAtTime(0, now);
-    await audio.play();
+    try {
+      await audio.play();
+    } catch (error) {
+      if (isAbortedPlayError(error)) return; // 被后续操作打断,正常,静默
+      state.playing = false;
+      showToast(`无法播放：${error.message || error}`);
+      return;
+    }
     if (!immediate) state.gains[deck].gain.linearRampToValueAtTime(1, now + 0.35);
     state.playing = true;
     updatePlayButton();
@@ -800,6 +819,7 @@
       }
       updatePlayButton();
     } catch (error) {
+      if (isAbortedPlayError(error)) return; // play/pause 快速连按互相打断,正常,静默
       showToast(`播放失败：${error.message || error}`);
     }
   }
