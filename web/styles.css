@@ -1254,6 +1254,73 @@ body[data-skin="glass"].is-shared-art-transition .art-frame-b {
 .mapping-footer span { margin-left: auto; color: rgba(255,255,255,.34); font-size: 10px; }
 body[data-clean="true"] .mapping-panel { cursor: auto; }
 
+/* Album info viewer：全屏展示一张信息图；点空白处关闭，打开带淡入+上移/缩放动效 */
+.info-viewer {
+  position: absolute;
+  inset: 0;
+  z-index: 96;
+  display: grid;
+  place-items: center;
+  background: rgba(5,6,8,.82);
+  backdrop-filter: blur(22px);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 320ms ease, visibility 320ms ease;
+}
+.info-viewer.is-open { opacity: 1; visibility: visible; pointer-events: auto; }
+.info-viewer-img {
+  max-width: 90vw;
+  max-height: 86vh;
+  object-fit: contain;
+  transform: scale(.96) translateY(12px);
+  opacity: 0;
+  filter: blur(8px);
+  transition: transform 420ms cubic-bezier(.2,.7,.2,1), opacity 320ms ease, filter 420ms ease;
+}
+.info-viewer.is-open .info-viewer-img {
+  transform: none;
+  opacity: 1;
+  filter: none;
+}
+.info-remove {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(255,255,255,.16);
+  border-radius: 50%;
+  color: rgba(255,255,255,.82);
+  background: rgba(255,255,255,.06);
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease;
+}
+.info-remove:hover { background: rgba(255,255,255,.14); color: #fff; }
+.info-add {
+  display: grid;
+  place-items: center;
+  gap: 10px;
+  width: min(380px, 70vw);
+  height: min(260px, 50vh);
+  padding: 24px;
+  border: 2px dashed rgba(255,255,255,.18);
+  border-radius: 18px;
+  background: rgba(255,255,255,.03);
+  color: rgba(255,255,255,.5);
+  cursor: pointer;
+  transition: border-color 180ms ease, color 180ms ease, background 180ms ease;
+}
+.info-add:hover {
+  border-color: rgba(255,255,255,.32);
+  color: rgba(255,255,255,.78);
+  background: rgba(255,255,255,.05);
+}
+.info-add-hint { font-size: 12px; letter-spacing: .08em; }
+
 @media (max-width: 1100px) {
   .composition { grid-template-columns: minmax(430px, 1.1fr) minmax(280px, .9fr); }
   .art-shell,
@@ -1726,6 +1793,7 @@ body[data-clean="true"] .control-dock { display: none !important; }
 }
 .dock-corner-left { left: 0; }
 .dock-corner-right { right: 0; }
+.dock-corner-top-left { top: 0; left: 0; bottom: auto; }
 
 @media (max-aspect-ratio: 1.45/1) {
   .composition { grid-template-columns: minmax(350px, .95fr) minmax(340px, 1.05fr) !important; gap: 26px; }
@@ -1760,6 +1828,7 @@ html[data-performance="mobile"] .control-dock,
 html[data-performance="mobile"] .welcome-panel,
 html[data-performance="mobile"] .drop-overlay,
 html[data-performance="mobile"] .mapping-panel,
+html[data-performance="mobile"] .info-viewer,
 html[data-performance="mobile"] body[data-skin="glass"] .stage,
 html[data-performance="mobile"] body[data-skin="glass"] .art-frame,
 html[data-performance="mobile"] body[data-skin="glass"] .touch-track-row::before {
@@ -1774,8 +1843,15 @@ html[data-performance="mobile"] .control-dock {
 
 html[data-performance="mobile"] .mapping-panel,
 html[data-performance="mobile"] .welcome-panel,
-html[data-performance="mobile"] .drop-overlay {
+html[data-performance="mobile"] .drop-overlay,
+html[data-performance="mobile"] .info-viewer {
   background: rgba(5,6,8,.94);
+}
+
+/* 移动端省 GPU：信息图去掉 blur 入场，只留缩放+淡入 */
+html[data-performance="mobile"] .info-viewer .info-viewer-img {
+  filter: none !important;
+  transition: transform 360ms cubic-bezier(.2,.7,.2,1), opacity 280ms ease !important;
 }
 
 html[data-performance="mobile"] .background-image {

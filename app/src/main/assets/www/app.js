@@ -60,7 +60,13 @@
     panelAlbumTitle: $("#panelAlbumTitle"),
     touchNowIndex: $("#touchNowIndex"),
     touchNowTitle: $("#touchNowTitle"),
-    trackList: $("#trackList")
+    trackList: $("#trackList"),
+    infoBtn: $("#infoBtn"),
+    infoViewer: $("#infoViewer"),
+    infoImg: $("#infoViewerImg"),
+    infoRemoveBtn: $("#infoRemoveBtn"),
+    infoAddBtn: $("#infoAddBtn"),
+    infoInput: $("#infoInput")
   };
 
   const SKINS = [
@@ -71,6 +77,9 @@
 
   const AUDIO_EXT = new Set(["mp3", "wav", "m4a", "aac", "ogg", "flac", "opus"]);
   const IMAGE_EXT = new Set(["jpg", "jpeg", "png", "webp", "gif", "avif", "svg"]);
+  // 专辑信息图保留名：import 目录根下的 __info__.<ext>。检测用根锚定；从曲绘池排除时用
+  // 无锚定的 /__info__\./i，兜住放进子目录的同名文件
+  const INFO_IMAGE_PREFIX = /^__info__\./i;
 
   const PERFORMANCE = (() => {
     const params = new URLSearchParams(location.search);
@@ -136,6 +145,7 @@
     previewTrackIndex: -1,
     previewTimer: 0,
     albumMeta: {},
+    infoViewerOpen: false,
     toastTimer: 0
   };
 
@@ -1252,7 +1262,7 @@
   async function parseFolderFiles(fileList) {
     const files = [...fileList];
     const audioFiles = files.filter((file) => AUDIO_EXT.has(extension(file.name))).sort((a, b) => naturalCompare(a.name, b.name));
-    const imageFiles = files.filter((file) => IMAGE_EXT.has(extension(file.name))).sort((a, b) => naturalCompare(a.name, b.name));
+    const imageFiles = files.filter((file) => IMAGE_EXT.has(extension(file.name)) && !/__info__\./i.test(file.name)).sort((a, b) => naturalCompare(a.name, b.name));
     if (!audioFiles.length) throw new Error("文件夹中没有识别到 MP3、WAV、M4A、OGG 等音频文件");
 
     let manifest = null;
@@ -1263,6 +1273,14 @@
     }
 
     revokeObjectUrls();
+    // 专辑信息图：文件夹里预置的 __info__.* 直接作为信息图（其余 __info__ 已排除出曲绘池）。
+    // 必须放在 revokeObjectUrls() 之后创建 blob，否则 URL 会被立刻撤销
+    const infoFile = files.find((file) => INFO_IMAGE_PREFIX.test(file.name));
+    const browserInfoImage = infoFile ? (() => {
+      const url = URL.createObjectURL(infoFile);
+      state.objectUrls.push(url);
+      return url;
+    })() : "";
     const manifestTracks = Array.isArray(manifest?.tracks) ? manifest.tracks : [];
     const audioUrlCache = new Map();
     const imageByName = new Map();
@@ -1349,7 +1367,8 @@
     await setTracks(tracks, {
       albumTitle: manifest?.albumTitle || manifest?.title || rootName,
       artist: manifest?.artist || "LOCAL SESSION",
-      images: imageAssets
+      images: imageAssets,
+      infoImage: browserInfoImage
     });
 
     if (imageFiles.length && imageFiles.length < audioFiles.length) {
@@ -1464,6 +1483,65 @@
     els.controlDock.classList.toggle("is-visible", state.dockVisible);
   }
 
+  /** 从 import 文件清单里定位专辑信息图（import 目录根下的 __info__.<ext>） */
+  function detectInfoImageFromListing(files) {
+    const found = (Array.isArray(files) ? files : []).find((name) => INFO_IMAGE_PREFIX.test(name));
+    return found ? "/import/" + found : "";
+  }
+
+  function renderInfoViewer() {
+    const url = state.albumMeta.infoImage || "";
+    const hasImage = !!url;
+    els.infoImg.src = hasImage ? url : "";
+    els.infoImg.style.display = hasImage ? "" : "none";
+    els.infoRemoveBtn.style.display = hasImage ? "" : "none";
+    els.infoAddBtn.style.display = hasImage ? "none" : "";
+  }
+
+  function openInfoViewer() {
+    renderInfoViewer();
+    state.infoViewerOpen = true;
+    els.infoViewer.classList.add("is-open");
+    els.infoViewer.setAttribute("aria-hidden", "false");
+  }
+
+  /** 返回 true 表示“信息图确实是开着、且已被关闭”，供 Android 返回键链式判断 */
+  function closeInfoViewer() {
+    if (!state.infoViewerOpen) return false;
+    state.infoViewerOpen = false;
+    els.infoViewer.classList.remove("is-open");
+    els.infoViewer.setAttribute("aria-hidden", "true");
+    return true;
+  }
+
+  function setInfoImage(url) {
+    state.albumMeta.infoImage = url || "";
+    if (state.infoViewerOpen) renderInfoViewer();
+  }
+
+  /** Android 侧回调：Kotlin 复制完信息图后调用，重读清单定位 __info__.*（?t= 防缓存） */
+  async function refreshInfoImage() {
+    try {
+      const resp = await fetch("/import/__list__?t=" + Date.now());
+      if (!resp.ok) return;
+      const listing = await resp.json();
+      if (!Array.isArray(listing.files)) return;
+      setInfoImage(detectInfoImageFromListing(listing.files));
+    } catch (_) {}
+  }
+
+  function removeInfoImage() {
+    if (!state.albumMeta.infoImage) return;
+    const url = state.albumMeta.infoImage;
+    state.albumMeta.infoImage = "";
+    if (PERFORMANCE.webView) {
+      fetch("/import/__info-delete__", { method: "POST" }).catch(() => {});
+    } else if (url.startsWith("blob:")) {
+      URL.revokeObjectURL(url);
+    }
+    if (state.infoViewerOpen) renderInfoViewer();
+  }
+
   async function loadImportedAlbum() {
     try {
       // 1) 有 album.json:以清单为准(专辑名/作者/配图/试听起点/副标题)
@@ -1493,10 +1571,22 @@
             startAt: Number(item.startAt) || 0
           };
         });
+        // 有清单也读一次 __list__：定位专辑信息图(__info__.*)。?t= 防缓存，避免刚写入就读到旧列表
+        let manifestInfoImage = "";
+        try {
+          const listResp = await fetch("/import/__list__?t=" + Date.now());
+          if (listResp.ok) {
+            const manifestListing = await listResp.json();
+            if (Array.isArray(manifestListing.files)) {
+              manifestInfoImage = detectInfoImageFromListing(manifestListing.files);
+            }
+          }
+        } catch (_) {}
         await downscaleTrackImages(tracks);
         await setTracks(tracks, {
           albumTitle: manifest.albumTitle || manifest.title || "IMPORTED ALBUM",
-          artist: manifest.artist || "IMPORTED"
+          artist: manifest.artist || "IMPORTED",
+          infoImage: manifestInfoImage
         });
         return;
       }
@@ -1508,8 +1598,9 @@
         if (resp.ok) listing = await resp.json();
       } catch (_) {}
       if (!listing || !Array.isArray(listing.files)) throw new Error("找不到 album.json 或素材清单");
+      const infoImage = detectInfoImageFromListing(listing.files);
       const audioNames = listing.files.filter((name) => AUDIO_EXT.has(extension(name))).sort(naturalCompare);
-      const imageNames = listing.files.filter((name) => IMAGE_EXT.has(extension(name))).sort(naturalCompare);
+      const imageNames = listing.files.filter((name) => IMAGE_EXT.has(extension(name)) && !/__info__\./i.test(name)).sort(naturalCompare);
       if (!audioNames.length) throw new Error("文件夹中没有音频文件");
       const chapters = imageNames.length < audioNames.length;
       const tracks = audioNames.map((name, index) => {
@@ -1545,7 +1636,8 @@
       await downscaleTrackImages(tracks);
       await setTracks(tracks, {
         albumTitle: listing.title || "导入专辑",
-        artist: "IMPORTED"
+        artist: "IMPORTED",
+        infoImage
       });
       if (!imageNames.length) showToast("未找到图片：已为每首歌生成程序化视觉底图", 4200);
     } catch (error) {
@@ -2102,6 +2194,8 @@
       selectTrack: selectTrackFromTouch,
       setSkin,
       cycleSkin,
+      refreshInfoImage,
+      closeInfoViewer,
       getPerformanceInfo: () => ({
         enabled: PERFORMANCE.enabled,
         android: PERFORMANCE.android,
@@ -2127,6 +2221,24 @@
     els.mappingPanel.addEventListener("click", (event) => {
       if (event.target === els.mappingPanel) setMappingOpen(false);
     });
+    // 左上角隐形热区 → 专辑信息图全屏查看
+    els.infoBtn?.addEventListener("click", openInfoViewer);
+    els.infoViewer?.addEventListener("click", (event) => {
+      if (event.target === els.infoViewer) closeInfoViewer();
+    });
+    els.infoRemoveBtn?.addEventListener("click", removeInfoImage);
+    els.infoAddBtn?.addEventListener("click", () => {
+      els.infoInput.value = "";
+      els.infoInput.click();
+    });
+    els.infoInput?.addEventListener("change", () => {
+      if (PERFORMANCE.webView) return; // Android 由 Kotlin 接管选图并回调 refreshInfoImage
+      if (!els.infoInput.files.length) return;
+      const file = els.infoInput.files[0];
+      const url = URL.createObjectURL(file);
+      state.objectUrls.push(url);
+      setInfoImage(url);
+    });
     els.cleanBtn.addEventListener("click", toggleClean);
     $$('[data-set-skin]').forEach((button) => button.addEventListener("click", () => setSkin(button.dataset.setSkin)));
 
@@ -2134,6 +2246,11 @@
       if (event.ctrlKey || event.metaKey || event.altKey) return;
       if (event.target instanceof HTMLSelectElement || event.target instanceof HTMLInputElement) return;
       const key = event.key.toLowerCase();
+      // 信息图打开时独占键盘：仅 Escape 关闭，其余按键不响应
+      if (state.infoViewerOpen) {
+        if (key === "escape") closeInfoViewer();
+        return;
+      }
       if (state.mappingOpen && !["g", "escape"].includes(key)) return;
       if ([" ", "arrowleft", "arrowright", "arrowup", "arrowdown"].includes(key)) event.preventDefault();
       if (key === " ") togglePlay();

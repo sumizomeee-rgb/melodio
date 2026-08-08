@@ -68,19 +68,33 @@ class MainActivity : Activity() {
                     fileChooserParams: FileChooserParams
                 ): Boolean {
                     pendingFileCallback = filePathCallback
+                    // 单图选择（<input type="file" accept="image/*">）走系统图片选择器；
+                    // 其余（文件夹 input 的 webkitdirectory 无 accept）保持目录树选择。
+                    val isImagePick = fileChooserParams.mode == FileChooserParams.MODE_OPEN
+                        && fileChooserParams.acceptTypes.any { it.startsWith("image/", ignoreCase = true) }
                     return try {
-                        startActivityForResult(
-                            Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
-                                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                .addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION),
-                            REQUEST_PICK_TREE
-                        )
+                        if (isImagePick) {
+                            startActivityForResult(
+                                Intent(Intent.ACTION_OPEN_DOCUMENT)
+                                    .addCategory(Intent.CATEGORY_OPENABLE)
+                                    .setType("image/*")
+                                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
+                                REQUEST_PICK_INFO_IMAGE
+                            )
+                        } else {
+                            startActivityForResult(
+                                Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+                                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    .addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION),
+                                REQUEST_PICK_TREE
+                            )
+                        }
                         true
                     } catch (e: Exception) {
-                        Log.e(TAG, "Failed to open folder picker", e)
+                        Log.e(TAG, "Failed to open file picker", e)
                         filePathCallback.onReceiveValue(null)
                         pendingFileCallback = null
-                        Toast.makeText(this@MainActivity, "无法打开文件夹选择器", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this@MainActivity, "无法打开选择器", Toast.LENGTH_SHORT).show()
                         false
                     }
                 }
@@ -119,6 +133,18 @@ class MainActivity : Activity() {
                             java.io.ByteArrayInputStream(json.toByteArray())
                         )
                     }
+                    // H5 侧「移除专辑信息图」：删除 import 目录里的 __info__.* 并返回 200
+                    if (url.startsWith(IMPORT_INFO_DELETE_URL)) {
+                        if (importDir.exists()) {
+                            importDir.listFiles { it.name.startsWith("__info__.", ignoreCase = true) }
+                                ?.forEach { it.delete() }
+                        }
+                        return android.webkit.WebResourceResponse(
+                            "text/plain",
+                            "utf-8",
+                            java.io.ByteArrayInputStream("ok".toByteArray())
+                        )
+                    }
                     // 媒体 seek 依赖 HTTP Range 请求，WebViewAssetLoader 不支持 →
                     // 自己处理 /assets/ 与 /import/ 的 Range，返回 206 + Content-Range
                     handleRangeRequest(request)?.let { return it }
@@ -142,36 +168,77 @@ class MainActivity : Activity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != REQUEST_PICK_TREE) return
         val callback = pendingFileCallback
         pendingFileCallback = null
-        val treeUri = data?.data
-        if (resultCode == RESULT_OK && treeUri != null) {
-            try {
-                contentResolver.takePersistableUriPermission(
-                    treeUri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION
-                )
-            } catch (e: Exception) {
-                Log.w(TAG, "takePersistableUriPermission failed", e)
-            }
-            thread {
-                try {
-                    copyImportedFiles(treeUri)
-                    // 记住所选文件夹名，作为无 album.json 时的专辑名
-                    queryTreeDisplayName(treeUri)?.let { name ->
-                        File(importDir, ".meta").writeText("""{"title":"${escapeJson(name)}"}""")
-                    }
-                    runOnUiThread {
-                        Toast.makeText(this, "素材导入完成", Toast.LENGTH_SHORT).show()
-                        webView.loadUrl(
-                            "https://appassets.androidplatform.net/assets/www/index.html?imported=1&performance=auto"
+        when (requestCode) {
+            REQUEST_PICK_TREE -> {
+                val treeUri = data?.data
+                if (resultCode == RESULT_OK && treeUri != null) {
+                    try {
+                        contentResolver.takePersistableUriPermission(
+                            treeUri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION
                         )
+                    } catch (e: Exception) {
+                        Log.w(TAG, "takePersistableUriPermission failed", e)
                     }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Import failed", e)
-                    runOnUiThread {
-                        Toast.makeText(this, "导入失败：${e.message}", Toast.LENGTH_LONG).show()
+                    thread {
+                        try {
+                            copyImportedFiles(treeUri)
+                            // 记住所选文件夹名，作为无 album.json 时的专辑名
+                            queryTreeDisplayName(treeUri)?.let { name ->
+                                File(importDir, ".meta").writeText("""{"title":"${escapeJson(name)}"}""")
+                            }
+                            runOnUiThread {
+                                Toast.makeText(this, "素材导入完成", Toast.LENGTH_SHORT).show()
+                                webView.loadUrl(
+                                    "https://appassets.androidplatform.net/assets/www/index.html?imported=1&performance=auto"
+                                )
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Import failed", e)
+                            runOnUiThread {
+                                Toast.makeText(this, "导入失败：${e.message}", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    }
+                }
+            }
+            // H5 侧「添加专辑信息图」：把所选单图复制到 import/__info__.<ext>（覆盖旧图），再通知页面刷新
+            REQUEST_PICK_INFO_IMAGE -> {
+                val uri = data?.data
+                if (resultCode == RESULT_OK && uri != null) {
+                    thread {
+                        try {
+                            importDir.mkdirs()
+                            importDir.listFiles { it.name.startsWith("__info__.", ignoreCase = true) }
+                                ?.forEach { it.delete() }
+                            val mime = contentResolver.getType(uri) ?: "image/jpeg"
+                            val ext = when (mime) {
+                                "image/jpeg" -> "jpg"
+                                "image/png" -> "png"
+                                "image/webp" -> "webp"
+                                "image/gif" -> "gif"
+                                "image/avif" -> "avif"
+                                "image/bmp" -> "bmp"
+                                else -> "jpg"
+                            }
+                            val target = File(importDir, "__info__.$ext")
+                            contentResolver.openInputStream(uri)?.use { input ->
+                                FileOutputStream(target).use { output -> input.copyTo(output) }
+                            }
+                            runOnUiThread {
+                                webView.evaluateJavascript(
+                                    "window.Melodio&&window.Melodio.refreshInfoImage&&window.Melodio.refreshInfoImage()",
+                                    null
+                                )
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Info image copy failed", e)
+                            runOnUiThread {
+                                Toast.makeText(this, "信息图保存失败", Toast.LENGTH_SHORT).show()
+                            }
+                        }
                     }
                 }
             }
@@ -411,7 +478,7 @@ class MainActivity : Activity() {
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         webView.evaluateJavascript(
-            "document.fullscreenElement ? document.exitFullscreen() : null",
+            "window.Melodio?.closeInfoViewer?.() || (document.fullscreenElement ? document.exitFullscreen() : null)",
             null
         )
     }
@@ -426,8 +493,10 @@ class MainActivity : Activity() {
     companion object {
         private const val TAG = "Melodio"
         private const val REQUEST_PICK_TREE = 1001
+        private const val REQUEST_PICK_INFO_IMAGE = 1002
         private const val IMPORT_DELETE_URL = "https://appassets.androidplatform.net/import/__delete__"
         private const val IMPORT_LIST_URL = "https://appassets.androidplatform.net/import/__list__"
+        private const val IMPORT_INFO_DELETE_URL = "https://appassets.androidplatform.net/import/__info-delete__"
         private val AUDIO_EXTS = setOf("mp3", "wav", "flac", "ogg", "m4a", "aac", "opus")
         private val IMAGE_EXTS = setOf("jpg", "jpeg", "png", "webp", "gif", "avif", "bmp")
         private val RANGE_PATTERN = Regex("""bytes=(\d+)-(\d*)""")
