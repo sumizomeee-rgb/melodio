@@ -188,6 +188,29 @@
       </button>
     </section>
 
+    <section id="loadingPanel" class="loading-panel" aria-hidden="true" aria-labelledby="loadingTitle">
+      <div class="loading-card">
+        <div class="loading-signal" aria-hidden="true">
+          <i></i><i></i><i></i>
+          <span>01</span>
+        </div>
+        <div class="loading-copy">
+          <span class="loading-eyebrow">MEDIA PREPARATION · LOCAL ONLY</span>
+          <h2 id="loadingTitle">正在打开专辑</h2>
+          <p id="loadingDetail">读取曲目与视觉素材…</p>
+          <div class="loading-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <i id="loadingProgressFill"></i>
+          </div>
+          <div class="loading-meta">
+            <span id="loadingStage">INDEXING</span>
+            <span id="loadingProgressText">00%</span>
+          </div>
+          <button id="loadingSkipBtn" class="loading-skip" type="button">跳过图片预热，直接进入</button>
+          <span class="loading-hint">大尺寸曲绘首次处理会稍慢；跳过不会影响播放，可在进入后继续加载。</span>
+        </div>
+      </div>
+    </section>
+
     <div id="toast" class="toast" role="status"></div>
     <input id="folderInput" type="file" webkitdirectory directory multiple hidden />
     <input id="infoInput" type="file" accept="image/*" hidden />

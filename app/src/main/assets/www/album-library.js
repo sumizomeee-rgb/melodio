@@ -16,6 +16,14 @@
   async function fetchLibrary() {
     if (mockLibrary) return mockLibrary;
     if (!isAndroidLibrary) return null;
+    if (window.MelodioNative?.readLibraryJson) {
+      try {
+        const text = window.MelodioNative.readLibraryJson();
+        return text ? JSON.parse(text) : null;
+      } catch (_) {
+        return null;
+      }
+    }
     try {
       const response = await fetch(`/library/__list__?t=${Date.now()}`, { cache: "no-store" });
       if (!response.ok) return null;
@@ -107,16 +115,17 @@
 
   function populateRail(button, album) {
     if (!button) return;
-    button.hidden = !album;
+    button.hidden = false;
+    button.classList.toggle("is-empty", !album);
     button.dataset.albumId = album?.id || "";
-    button.querySelector(".album-edge-title").textContent = album?.title || "—";
-    button.querySelector(".album-edge-meta").textContent = album ? `${album.trackCount || 0} TRACKS` : "—";
+    button.querySelector(".album-edge-title").textContent = album?.title || "仅一张专辑";
+    button.querySelector(".album-edge-meta").textContent = album ? `${album.trackCount || 0} TRACKS` : "点此管理专辑";
     const cover = button.querySelector(".album-edge-cover");
     if (cover) {
       cover.style.backgroundImage = album?.cover ? `url("${String(album.cover).replace(/"/g, "\\\"")}")` : "none";
       cover.classList.toggle("has-cover", Boolean(album?.cover));
     }
-    button.setAttribute("aria-label", album ? `${button.dataset.side === "left" ? "上一张" : "下一张"}专辑：${album.title}` : "切换专辑");
+    button.setAttribute("aria-label", album ? `${button.dataset.side === "left" ? "上一张" : "下一张"}专辑：${album.title}` : "打开专辑管理");
   }
 
   function renderRails(library) {
@@ -131,7 +140,10 @@
 
   function activateRail(button) {
     const id = button?.dataset.albumId;
-    if (!id) return;
+    if (!id) {
+      openLibraryOverview();
+      return;
+    }
     switchAlbum(id, button.dataset.side === "left" ? "prev" : "next");
   }
 
@@ -156,6 +168,15 @@
     }
 
     try {
+      if (window.MelodioNative?.switchAlbum) {
+        if (!window.MelodioNative.switchAlbum(id)) throw new Error("album not found");
+        const url = new URL(location.href);
+        url.searchParams.set("imported", "1");
+        url.searchParams.set("performance", url.searchParams.get("performance") || "auto");
+        url.searchParams.set("album", id);
+        location.replace(url.toString());
+        return;
+      }
       const response = await fetch(`/library/__switch__?id=${encodeURIComponent(id)}&t=${Date.now()}`, {
         method: "POST",
         cache: "no-store"
@@ -258,12 +279,19 @@
     button.dataset.libraryConfirm = "";
     button.disabled = true;
     try {
-      const response = await fetch(`/library/__delete__?id=${encodeURIComponent(id)}&t=${Date.now()}`, {
-        method: "POST",
-        cache: "no-store"
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const nextLibrary = await response.json();
+      let nextLibrary = null;
+      if (window.MelodioNative?.deleteAlbumFromLibrary) {
+        const text = window.MelodioNative.deleteAlbumFromLibrary(id);
+        if (!text) throw new Error("delete failed");
+        nextLibrary = JSON.parse(text);
+      } else {
+        const response = await fetch(`/library/__delete__?id=${encodeURIComponent(id)}&t=${Date.now()}`, {
+          method: "POST",
+          cache: "no-store"
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        nextLibrary = await response.json();
+      }
       if (id === state.library.currentId && nextLibrary.currentId) {
         sessionStorage.setItem("melodio-album-entry", "next");
         const url = new URL(location.href);
@@ -309,13 +337,23 @@
           const row = mutation.target;
           if (!(row instanceof HTMLElement) || !row.classList.contains("touch-track-row")) continue;
           if (!row.classList.contains("is-active")) continue;
+          // 只响应“非选中 → 选中”这一次状态变化。动画类自身的增删也会
+          // 触发 MutationObserver；若不检查旧状态，会形成无限微任务循环，
+          // 直接打满 WebView 主线程并让切歌永久卡住。
+          const wasActive = String(mutation.oldValue || "").split(/\s+/).includes("is-active");
+          if (wasActive) continue;
           row.classList.remove("is-motion-enter");
           void row.offsetWidth;
           row.classList.add("is-motion-enter");
           setTimeout(() => row.classList.remove("is-motion-enter"), 440);
         }
       });
-      observer.observe(list, { subtree: true, attributes: true, attributeFilter: ["class"] });
+      observer.observe(list, {
+        subtree: true,
+        attributes: true,
+        attributeOldValue: true,
+        attributeFilter: ["class"]
+      });
     }
 
     const welcome = $("#welcome");

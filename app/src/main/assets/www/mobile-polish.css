@@ -85,6 +85,9 @@ body.is-transitioning .vinyl-label, body.is-shared-art-transition .vinyl-label {
 .album-edge-kicker, .album-edge-meta { font: 8px/1 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .13em; opacity: .45; white-space: nowrap; }
 .album-edge-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 540 17px/1.06 var(--display-font); letter-spacing: -.02em; }
 .album-edge-rail[hidden] { display: none !important; }
+.album-edge-rail.is-empty { opacity: .64; }
+.album-edge-rail.is-empty .album-edge-cover { filter: grayscale(1); opacity: .46; }
+.album-edge-rail.is-empty .album-edge-kicker { opacity: .32; }
 body.library-overview-open .album-edge-rail, body[data-clean="true"] .album-edge-rail { opacity: 0; pointer-events: none; }
 
 body[data-skin="stamp"] .album-edge-rail { color: #6f342b; background: rgba(234,219,190,.94); border-color: rgba(86,61,40,.18); box-shadow: 0 14px 42px rgba(35,25,17,.25); }
@@ -92,6 +95,11 @@ body[data-skin="stamp"] .album-edge-cover { border-radius: 2px; box-shadow: 0 8p
 body[data-skin="film"] .album-edge-rail { color: #f2b36b; background: rgba(12,11,12,.91); border-color: rgba(242,179,107,.2); }
 body[data-skin="glass"] .album-edge-rail { color: #c8f3ef; background: linear-gradient(145deg, rgba(18,44,52,.94), rgba(18,20,42,.94)); border-color: rgba(191,239,235,.2); }
 html[data-performance="mobile"] .album-edge-rail { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
+html[data-runtime="android-webview"] .vinyl-disc-spin {
+  animation-duration: 16s !important;
+  animation-timing-function: steps(48, end) !important;
+  will-change: auto !important;
+}
 
 body.is-album-exiting .stage-header, body.is-album-exiting .composition, body.is-album-exiting .stage-footer { pointer-events: none; transition: transform 230ms cubic-bezier(.4,0,.7,.2), opacity 210ms ease; }
 body[data-album-switch-direction="next"].is-album-exiting .stage-header, body[data-album-switch-direction="next"].is-album-exiting .composition, body[data-album-switch-direction="next"].is-album-exiting .stage-footer { transform: translate3d(-18px,0,0); opacity: .14; }

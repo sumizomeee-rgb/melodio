@@ -3,6 +3,8 @@ package com.sumizomeee.melodio
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
 import android.provider.DocumentsContract
@@ -11,6 +13,7 @@ import android.view.KeyEvent
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.ValueCallback
+import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
@@ -37,6 +40,8 @@ class MainActivity : Activity() {
     private val albumsRoot by lazy { File(filesDir, "albums") }
     private val activeAlbumIdFile by lazy { File(filesDir, ".active-album") }
     private val emptyAlbumDir by lazy { File(filesDir, ".empty-album") }
+    private val artworkCacheDir by lazy { File(cacheDir, "artwork") }
+    private val artworkCacheLock = Any()
 
     private val assetLoader by lazy {
         WebViewAssetLoader.Builder()
@@ -111,7 +116,6 @@ class MainActivity : Activity() {
                 ): android.webkit.WebResourceResponse? {
                     val url = request.url
                     val urlText = url.toString()
-
                     if (urlText.startsWith(LIBRARY_LIST_URL)) {
                         return jsonResponse(buildLibraryJson())
                     }
@@ -140,19 +144,7 @@ class MainActivity : Activity() {
                         return textResponse("ok")
                     }
                     if (urlText.startsWith(IMPORT_LIST_URL)) {
-                        val dir = activeAlbumDir()
-                        val files = if (dir.exists()) {
-                            dir.walkTopDown()
-                                .filter { it.isFile }
-                                .map { it.relativeTo(dir).path.replace('\\', '/') }
-                                .toList()
-                        } else emptyList()
-                        val json = buildString {
-                            append("{\"title\":\"").append(escapeJson(readMetaTitle(dir) ?: "")).append("\",\"files\":[")
-                            append(files.joinToString(",") { "\"" + escapeJson(it) + "\"" })
-                            append("]}")
-                        }
-                        return jsonResponse(json)
+                        return jsonResponse(buildActiveAlbumListingJson())
                     }
                     if (urlText.startsWith(IMPORT_INFO_DELETE_URL)) {
                         val dir = activeAlbumDir()
@@ -168,6 +160,7 @@ class MainActivity : Activity() {
                     return assetLoader.shouldInterceptRequest(request.url)
                 }
             }
+            addJavascriptInterface(NativeAlbumBridge(), "MelodioNative")
         }
         setContentView(webView)
 
@@ -326,40 +319,163 @@ class MainActivity : Activity() {
         val path = request.url.path ?: return null
         if (!path.startsWith("/import/")) return null
         val relativePath = path.removePrefix("/import/")
-        if (relativePath.isBlank()) return null
-        val file = safeAlbumFile(activeAlbumDir(), relativePath) ?: return null
-        if (!file.isFile) return null
+        // /import/ 是完全本地的命名空间。缺失的可选 album.json 如果返回 null，
+        // WebView 会尝试访问真实域名，离线时可能让专辑启动永久等待。
+        if (relativePath.isBlank()) return textResponse("not found", 404, "Not Found")
+        val file = safeAlbumFile(activeAlbumDir(), relativePath)
+            ?: return textResponse("not found", 404, "Not Found")
+        if (!file.isFile) return textResponse("not found", 404, "Not Found")
         return fileResponse(file)
     }
 
+    private inner class NativeAlbumBridge {
+        @JavascriptInterface
+        fun readLocalJson(path: String): String {
+            return when (path.substringBefore('?')) {
+                "/import/__list__" -> buildActiveAlbumListingJson()
+                "/import/album.json" -> {
+                    val file = safeAlbumFile(activeAlbumDir(), "album.json")
+                    if (file?.isFile == true && file.length() <= 2L * 1024L * 1024L) {
+                        runCatching { file.readText(Charsets.UTF_8) }.getOrDefault("")
+                    } else ""
+                }
+                else -> ""
+            }
+        }
+
+        @JavascriptInterface
+        fun readLibraryJson(): String = buildLibraryJson()
+
+        @JavascriptInterface
+        fun switchAlbum(id: String): Boolean = setActiveAlbumId(id)
+
+        @JavascriptInterface
+        fun deleteAlbumFromLibrary(id: String): String {
+            if (!deleteAlbum(id)) return ""
+            return buildLibraryJson()
+        }
+    }
+
+    private fun buildActiveAlbumListingJson(): String {
+        val dir = activeAlbumDir()
+        val files = if (dir.exists()) {
+            dir.walkTopDown()
+                .filter { it.isFile }
+                .map { it.relativeTo(dir).path.replace('\\', '/') }
+                .toList()
+        } else emptyList()
+        return buildString {
+            append("{\"title\":\"").append(escapeJson(readMetaTitle(dir) ?: "")).append("\",\"files\":[")
+            append(files.joinToString(",") { "\"" + escapeJson(it) + "\"" })
+            append("]}")
+        }
+    }
+
     private fun fileResponse(file: File): android.webkit.WebResourceResponse {
-        val ext = file.extension.lowercase()
+        val servedFile = optimizedArtworkFile(file) ?: file
+        val ext = servedFile.extension.lowercase()
         val mime = MIME_MAP[ext] ?: if (ext == "json") "application/json" else "application/octet-stream"
         val encoding = if (mime.startsWith("text/") || mime == "application/json") "utf-8" else null
-        return android.webkit.WebResourceResponse(mime, encoding, FileInputStream(file))
+        return android.webkit.WebResourceResponse(
+            mime,
+            encoding,
+            200,
+            "OK",
+            mapOf(
+                "Content-Length" to servedFile.length().toString(),
+                "Accept-Ranges" to "bytes",
+                "Cache-Control" to "no-cache"
+            ),
+            FileInputStream(servedFile)
+        )
+    }
+
+    /** 旧 WebView 解码 30–40 MB PNG 可能耗时数分钟；原生生成并复用 1800px JPEG。 */
+    private fun optimizedArtworkFile(source: File): File? {
+        val ext = source.extension.lowercase()
+        if (ext !in IMAGE_EXTS || ext in setOf("gif", "svg", "avif") ||
+            source.name.startsWith("__info__.", ignoreCase = true)
+        ) return null
+
+        return synchronized(artworkCacheLock) {
+            try {
+                val key = buildString {
+                    append(source.canonicalPath.hashCode().toUInt().toString(16))
+                    append('-').append(source.length())
+                    append('-').append(source.lastModified())
+                }
+                artworkCacheDir.mkdirs()
+                // 部分模拟器的 WebView 91 无法稳定读取 Android 生成的 WebP，改用兼容性更好的 JPEG。
+                val cached = File(artworkCacheDir, "$key.jpg")
+                if (cached.isFile && cached.length() > 0L) return@synchronized cached
+
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(source.absolutePath, bounds)
+                val longest = maxOf(bounds.outWidth, bounds.outHeight)
+                if (longest <= 0 || longest <= ARTWORK_MAX_SIDE) return@synchronized null
+
+                var sample = 1
+                while (longest / sample > ARTWORK_DECODE_SIDE) sample *= 2
+                val options = BitmapFactory.Options().apply {
+                    inSampleSize = sample
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                }
+                val decoded = BitmapFactory.decodeFile(source.absolutePath, options)
+                    ?: return@synchronized null
+                val scale = ARTWORK_MAX_SIDE.toFloat() / maxOf(decoded.width, decoded.height)
+                val width = maxOf(1, (decoded.width * scale).toInt())
+                val height = maxOf(1, (decoded.height * scale).toInt())
+                val resized = if (scale < 1f) Bitmap.createScaledBitmap(decoded, width, height, true) else decoded
+                if (resized !== decoded) decoded.recycle()
+
+                val temporary = File(artworkCacheDir, "$key.tmp")
+                FileOutputStream(temporary).use { output ->
+                    if (!resized.compress(Bitmap.CompressFormat.JPEG, 92, output)) {
+                        throw IllegalStateException("JPEG compression failed")
+                    }
+                }
+                resized.recycle()
+                if (!temporary.renameTo(cached)) {
+                    temporary.copyTo(cached, overwrite = true)
+                    temporary.delete()
+                }
+                cached.takeIf { it.length() > 0L }
+            } catch (e: Exception) {
+                Log.w(TAG, "Artwork optimization failed: ${source.name}", e)
+                null
+            }
+        }
     }
 
     private fun textResponse(
         text: String,
         status: Int = 200,
         reason: String = "OK"
-    ): android.webkit.WebResourceResponse = android.webkit.WebResourceResponse(
-        "text/plain",
-        "utf-8",
-        status,
-        reason,
-        emptyMap(),
-        java.io.ByteArrayInputStream(text.toByteArray())
-    )
+    ): android.webkit.WebResourceResponse {
+        val bytes = text.toByteArray(Charsets.UTF_8)
+        return android.webkit.WebResourceResponse(
+            "text/plain",
+            "utf-8",
+            status,
+            reason,
+            mapOf(
+                "Content-Length" to bytes.size.toString(),
+                "Cache-Control" to "no-store"
+            ),
+            java.io.ByteArrayInputStream(bytes)
+        )
+    }
 
-    private fun jsonResponse(json: String): android.webkit.WebResourceResponse = android.webkit.WebResourceResponse(
-        "application/json",
-        "utf-8",
-        200,
-        "OK",
-        mapOf("Cache-Control" to "no-store"),
-        java.io.ByteArrayInputStream(json.toByteArray())
-    )
+    private fun jsonResponse(json: String): android.webkit.WebResourceResponse {
+        val bytes = json.toByteArray(Charsets.UTF_8)
+        // WebView 91 对六参数合成 JSON 响应可能只返回响应头、正文永久等待；
+        // 基础构造器可以可靠地为内存流发送 EOF。
+        return android.webkit.WebResourceResponse(
+            "application/json",
+            "utf-8",
+            java.io.ByteArrayInputStream(bytes)
+        )
+    }
 
     private class BoundedInputStream(
         private val delegate: java.io.InputStream,
@@ -668,6 +784,8 @@ class MainActivity : Activity() {
         private const val IMPORT_DELETE_URL = "https://appassets.androidplatform.net/import/__delete__"
         private const val IMPORT_LIST_URL = "https://appassets.androidplatform.net/import/__list__"
         private const val IMPORT_INFO_DELETE_URL = "https://appassets.androidplatform.net/import/__info-delete__"
+        private const val ARTWORK_MAX_SIDE = 1800
+        private const val ARTWORK_DECODE_SIDE = 2600
         private const val LIBRARY_LIST_URL = "https://appassets.androidplatform.net/library/__list__"
         private const val LIBRARY_SWITCH_URL = "https://appassets.androidplatform.net/library/__switch__"
         private const val LIBRARY_DELETE_URL = "https://appassets.androidplatform.net/library/__delete__"

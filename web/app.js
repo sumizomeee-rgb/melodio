@@ -66,7 +66,15 @@
     infoImg: $("#infoViewerImg"),
     infoRemoveBtn: $("#infoRemoveBtn"),
     infoAddBtn: $("#infoAddBtn"),
-    infoInput: $("#infoInput")
+    infoInput: $("#infoInput"),
+    loadingPanel: $("#loadingPanel"),
+    loadingTitle: $("#loadingTitle"),
+    loadingDetail: $("#loadingDetail"),
+    loadingStage: $("#loadingStage"),
+    loadingProgress: $(".loading-progress"),
+    loadingProgressFill: $("#loadingProgressFill"),
+    loadingProgressText: $("#loadingProgressText"),
+    loadingSkipBtn: $("#loadingSkipBtn")
   };
 
   const SKINS = [
@@ -93,14 +101,14 @@
       android,
       webView,
       mode,
-      spectrumBands: enabled ? 32 : 48,
-      targetFps: enabled ? 30 : 60,
-      minimumFps: enabled ? 24 : 60,
-      cssInterval: enabled ? 34 : 16,
-      progressInterval: enabled ? 100 : 50,
-      dprCap: enabled ? 1 : 1.5,
-      renderScale: 1,
-      minRenderScale: enabled ? .72 : 1,
+      spectrumBands: enabled ? 24 : 48,
+      targetFps: enabled ? 20 : 60,
+      minimumFps: enabled ? 15 : 60,
+      cssInterval: enabled ? 50 : 16,
+      progressInterval: enabled ? 160 : 50,
+      dprCap: enabled ? .75 : 1.5,
+      renderScale: enabled ? .72 : 1,
+      minRenderScale: enabled ? .54 : 1,
       maxRenderScale: 1,
       adaptive: enabled,
       averageRenderCost: 0,
@@ -146,7 +154,10 @@
     previewTimer: 0,
     albumMeta: {},
     infoViewerOpen: false,
-    toastTimer: 0
+    toastTimer: 0,
+    loading: false,
+    loadingSkipRequested: false,
+    loadingSkipHandlers: new Set()
   };
 
   function clamp(value, min, max) {
@@ -228,6 +239,85 @@
 
   function setWelcomeVisible(visible) {
     els.welcome.classList.toggle("is-hidden", !visible);
+  }
+
+  function setLoadingState({ title, detail, stage, progress, canSkip } = {}) {
+    if (title != null) els.loadingTitle.textContent = title;
+    if (detail != null) els.loadingDetail.textContent = detail;
+    if (stage != null) els.loadingStage.textContent = stage;
+    if (progress != null) {
+      const value = clamp(Number(progress) || 0, 0, 1);
+      const percent = Math.round(value * 100);
+      els.loadingProgressFill.style.width = `${percent}%`;
+      els.loadingProgressText.textContent = `${pad(percent)}%`;
+      els.loadingProgress.setAttribute("aria-valuenow", String(percent));
+    }
+    if (canSkip != null) els.loadingSkipBtn.disabled = !canSkip;
+  }
+
+  function beginAlbumLoading(title = "正在打开专辑") {
+    state.loading = true;
+    state.loadingSkipRequested = false;
+    els.loadingSkipBtn.textContent = "跳过图片预热，直接进入";
+    els.loadingPanel.classList.add("is-active");
+    els.loadingPanel.setAttribute("aria-hidden", "false");
+    setLoadingState({ title, detail: "读取曲目与视觉素材…", stage: "INDEXING", progress: .04, canSkip: true });
+  }
+
+  function finishAlbumLoading() {
+    state.loading = false;
+    state.loadingSkipHandlers.clear();
+    setLoadingState({ detail: "专辑已就绪", stage: "READY", progress: 1, canSkip: false });
+    window.setTimeout(() => {
+      if (state.loading) return;
+      els.loadingPanel.classList.remove("is-active");
+      els.loadingPanel.setAttribute("aria-hidden", "true");
+    }, 280);
+  }
+
+  function failAlbumLoading(message) {
+    state.loading = false;
+    state.loadingSkipHandlers.clear();
+    els.loadingPanel.classList.remove("is-active");
+    els.loadingPanel.setAttribute("aria-hidden", "true");
+    showToast(message, 4800);
+  }
+
+  function requestLoadingSkip() {
+    if (!state.loading || state.loadingSkipRequested) return;
+    state.loadingSkipRequested = true;
+    els.loadingSkipBtn.disabled = true;
+    els.loadingSkipBtn.textContent = "正在直接进入…";
+    setLoadingState({ detail: "已跳过剩余图片预热，正在准备首曲…", stage: "FAST ENTRY", progress: .9 });
+    for (const handler of state.loadingSkipHandlers) handler();
+    state.loadingSkipHandlers.clear();
+  }
+
+  async function fetchLocalJson(url, timeoutMs = 2500) {
+    if (PERFORMANCE.webView && window.MelodioNative?.readLocalJson) {
+      const text = window.MelodioNative.readLocalJson(url);
+      return text ? JSON.parse(text) : null;
+    }
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    let timeoutId = 0;
+    try {
+      const timeout = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+          if (controller) controller.abort();
+          reject(new Error(`本地读取超时：${url}`));
+        }, timeoutMs);
+      });
+      return await Promise.race([
+        fetch(url, controller ? { signal: controller.signal } : undefined).then(async (response) => {
+          if (!response.ok) return null;
+          const text = await response.text();
+          return JSON.parse(text);
+        }),
+        timeout
+      ]);
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
 
   function revokeObjectUrls() {
@@ -436,38 +526,64 @@
     el.style.backgroundImage = url ? `url("${String(url).replace(/"/g, "\\\"")}")` : "none";
   }
 
-  function preloadImage(url) {
+  function preloadImage(url, { timeout = PERFORMANCE.webView ? 2600 : 6000, skippable = state.loading } = {}) {
     if (!url) return Promise.resolve(null);
     if (state.decodedImages.has(url)) return state.decodedImages.get(url);
 
-    // Keep the decoded HTMLImageElement alive. Resolving on `load` alone can still
-    // leave the first paint doing a costly decode, especially for large PNG files.
+    // WebView 91 occasionally leaves image.decode() pending forever on large images.
+    // Install load/error listeners before assigning src, bound the wait, and allow
+    // the loading screen's fast-entry action to cancel this hidden preheater.
     const promise = new Promise((resolve) => {
       const image = new Image();
-      image.decoding = "sync";
-      image.src = url;
+      image.decoding = PERFORMANCE.webView ? "async" : "sync";
+      let settled = false;
+      let timer = 0;
 
-      const finish = () => resolve(image);
-      if (typeof image.decode === "function") {
-        image.decode().then(finish).catch(() => {
-          if (image.complete) finish();
-          else {
-            image.addEventListener("load", finish, { once: true });
-            image.addEventListener("error", finish, { once: true });
-          }
-        });
-      } else {
-        image.addEventListener("load", finish, { once: true });
-        image.addEventListener("error", finish, { once: true });
-      }
+      const finish = (result = image, cancelDecode = false) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        image.removeEventListener("load", onLoad);
+        image.removeEventListener("error", onError);
+        state.loadingSkipHandlers.delete(onSkip);
+        if (cancelDecode) image.src = "data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=";
+        resolve(result);
+      };
+      const onLoad = () => {
+        // A completed load is reliable enough on old Android WebView. Calling
+        // decode() there is precisely the path that can remain pending forever.
+        if (PERFORMANCE.webView || typeof image.decode !== "function") finish(image);
+        else image.decode().then(() => finish(image)).catch(() => finish(image));
+      };
+      const onError = () => finish(null);
+      const onSkip = () => finish(null, true);
+
+      image.addEventListener("load", onLoad, { once: true });
+      image.addEventListener("error", onError, { once: true });
+      if (skippable) state.loadingSkipHandlers.add(onSkip);
+      timer = window.setTimeout(() => finish(null, true), timeout);
+      image.src = url;
     });
     state.decodedImages.set(url, promise);
     return promise;
   }
 
-  async function preloadImages(urls) {
+  async function preloadImages(urls, onProgress = null) {
     const unique = [...new Set(urls.filter(Boolean))];
-    await Promise.all(unique.map(preloadImage));
+    // Android already serves native 1800px cache derivatives. Hidden image
+    // preheating with decoding="sync" can block WebView 91 so completely that
+    // even timeout callbacks do not run; let visible artwork decode asynchronously.
+    if (PERFORMANCE.webView) {
+      onProgress?.(unique.length, unique.length);
+      return;
+    }
+    // Serial preheating prevents two 30–40 MB originals from saturating the old
+    // WebView renderer at the same time. Fast-entry can stop between any two items.
+    for (let index = 0; index < unique.length; index++) {
+      if (state.loadingSkipRequested) break;
+      await preloadImage(unique[index]);
+      onProgress?.(index + 1, unique.length);
+    }
   }
 
   function canvasToBlob(canvas, type, quality) {
@@ -587,18 +703,29 @@
   }
 
   /** 对整张曲目表里出现过的 /import/ 图片统一降采样,并回填 image/backgroundImage */
-  async function downscaleTrackImages(tracks) {
+  async function downscaleTrackImages(tracks, onProgress = null) {
     const sources = [...new Set(tracks.map((track) => track.image).filter(
       (url) => url && !url.startsWith("data:")
     ))];
     if (!sources.length) return;
 
+    // Android serves a cached 1800px derivative for imported artwork. Keeping
+    // resizing native avoids feeding 30–40 MB originals into WebView 91's bitmap
+    // decoder, which can monopolize its renderer for minutes.
+    if (PERFORMANCE.webView) {
+      onProgress?.(sources.length, sources.length);
+      return;
+    }
+
     showToast(`正在压缩 ${sources.length} 张视觉素材…`, 2400);
     const mapping = new Map();
     // 串行:每张转码本身就吃满主线程,并发只会让单次长任务更长
-    for (const source of sources) {
+    for (let index = 0; index < sources.length; index++) {
+      if (state.loadingSkipRequested) break;
+      const source = sources[index];
       const variant = await downscaleRemoteImage(source);
       if (variant) mapping.set(source, variant);
+      onProgress?.(index + 1, sources.length);
     }
     for (const track of tracks) {
       const variant = mapping.get(track.image);
@@ -762,7 +889,7 @@
   }
 
   async function loadTrack(index, options = {}) {
-    const { animate = true, autoplay = state.playing, direction = 1 } = options;
+    const { animate = true, autoplay = state.playing, direction = 1, deferMedia = false } = options;
     stopStartPreview();
     if (!state.tracks.length) return;
     if (state.transitioning && animate) return;
@@ -780,6 +907,36 @@
     requestVisualFrame(true);
     els.body.dataset.direction = direction >= 0 ? "next" : "prev";
 
+    if (firstLoad && deferMedia) {
+      // On old Android WebView, opening a large WAV before any user gesture can
+      // monopolize the media pipeline. Paint a fully interactive first screen now;
+      // togglePlay() prepares this deck on the user's first tap/Space press.
+      if (!PERFORMANCE.webView) {
+        await Promise.all([
+          preloadImage(track.image),
+          preloadImage(track.backgroundImage || track.image)
+        ]);
+      }
+      if (token !== state.transitionToken) return;
+      state.currentIndex = normalized;
+      state.activeDeck = newDeck;
+      updateTrackCopy(normalized);
+      updatePlayButton();
+      if (PERFORMANCE.webView) {
+        // 先让加载层完成退场并把播放器骨架绘制出来，再挂载首张曲绘。
+        // WebView 91 即使只解码经过原生缩小的 JPEG，也可能阻塞首次绘制；
+        // 把图片请求延后一帧之外，至少保证用户先得到可交互界面。
+        window.setTimeout(() => {
+          if (token === state.transitionToken && state.currentIndex === normalized) {
+            setImageImmediately(track.image, track, normalized);
+          }
+        }, 360);
+      } else {
+        setImageImmediately(track.image, track, normalized);
+      }
+      return;
+    }
+
     if (firstLoad || !animate) {
       // 首次载入 / 无动画切换:没有过渡动画会被挡住,直接等音频与图片就绪再接管
       await Promise.all([
@@ -795,6 +952,47 @@
       if (autoplay) await startDeck(newDeck, oldDeck, true);
       updatePlayButton();
       primeAdjacentAudio(normalized, 1);
+      return;
+    }
+
+    if (PERFORMANCE.webView) {
+      // WebView 91 在切歌时用隐藏 Image 预解码会把渲染进程打满并长期
+      // 卡住。移动端先提交曲目状态、立即释放交互锁，再在下一任务挂图；
+      // 音频准备完全放到后台，不让图片或 WAV 冷加载阻塞连续切歌。
+      state.currentIndex = normalized;
+      state.activeDeck = newDeck;
+      state.transitioning = false;
+      updateTrackCopy(normalized);
+      updatePlayButton();
+      window.setTimeout(() => {
+        if (token === state.transitionToken && state.currentIndex === normalized) {
+          setImageImmediately(track.image, track, normalized);
+        }
+      }, 0);
+
+      (async () => {
+        try {
+          await prepareAudioDeck(newDeck, normalized);
+          if (token !== state.transitionToken) return;
+          if (autoplay) {
+            await initAudio();
+            const now = state.audioContext.currentTime;
+            state.gains[newDeck].gain.cancelScheduledValues(now);
+            state.gains[oldDeck].gain.cancelScheduledValues(now);
+            state.gains[newDeck].gain.setValueAtTime(1, now);
+            state.gains[oldDeck].gain.setValueAtTime(0, now);
+            await newAudio.play();
+            if (token !== state.transitionToken) return;
+            oldAudio.pause();
+            try { oldAudio.currentTime = 0; } catch (_) {}
+          }
+        } catch (error) {
+          if (isAbortedPlayError(error) || token !== state.transitionToken) return;
+          state.playing = false;
+          updatePlayButton();
+          showToast(`无法播放：${error.message || error}`);
+        }
+      })();
       return;
     }
 
@@ -930,6 +1128,11 @@
       await initAudio();
       const audio = els.audio[state.activeDeck];
       const gain = state.gains[state.activeDeck];
+      if (state.currentIndex >= 0 &&
+          (state.deckTrackIndices[state.activeDeck] !== state.currentIndex || !audio.src)) {
+        showToast("正在准备音频…", 1600);
+        await prepareAudioDeck(state.activeDeck, state.currentIndex);
+      }
       const now = state.audioContext.currentTime;
       if (state.playing && !audio.paused) {
         gain.gain.cancelScheduledValues(now);
@@ -1250,12 +1453,26 @@
     updatePlayButton();
     setWelcomeVisible(false);
 
-    showToast(`正在预解码 ${state.availableImages.length || state.imageCount} 张图片…`, 1800);
+    setLoadingState({
+      title: meta.albumTitle || "正在打开专辑",
+      detail: `正在预热 ${state.availableImages.length || state.imageCount} 张视觉素材…`,
+      stage: "PREHEATING",
+      progress: .58
+    });
     await preloadImages([
       ...state.availableImages.flatMap((asset) => [asset.url, asset.backgroundUrl]),
       ...tracks.flatMap((track) => [track.image, track.backgroundImage])
-    ]);
-    await loadTrack(0, { animate: false, autoplay: true });
+    ], (current, total) => setLoadingState({
+      detail: `图片预热 ${current} / ${total}`,
+      stage: "PREHEATING",
+      progress: .58 + .28 * current / Math.max(1, total)
+    }));
+    setLoadingState({ detail: "正在准备第一首歌曲…", stage: "AUDIO READY", progress: .9, canSkip: false });
+    await loadTrack(0, {
+      animate: false,
+      autoplay: !PERFORMANCE.webView,
+      deferMedia: PERFORMANCE.webView
+    });
     showToast(`已载入 ${tracks.length} 首歌曲 · ${state.imageCount} 张视觉素材 · 图片与下一首音频已预热`, 3600);
   }
 
@@ -1543,12 +1760,13 @@
   }
 
   async function loadImportedAlbum() {
+    beginAlbumLoading();
     try {
+      setLoadingState({ detail: "正在读取专辑目录…", stage: "INDEXING", progress: .08 });
       // 1) 有 album.json:以清单为准(专辑名/作者/配图/试听起点/副标题)
       let manifest = null;
       try {
-        const resp = await fetch("/import/album.json");
-        if (resp.ok) manifest = await resp.json();
+        manifest = await fetchLocalJson("/import/album.json");
       } catch (_) {}
       if (manifest && Array.isArray(manifest.tracks) && manifest.tracks.length) {
         const tracks = manifest.tracks.map((item, index) => {
@@ -1574,28 +1792,31 @@
         // 有清单也读一次 __list__：定位专辑信息图(__info__.*)。?t= 防缓存，避免刚写入就读到旧列表
         let manifestInfoImage = "";
         try {
-          const listResp = await fetch("/import/__list__?t=" + Date.now());
-          if (listResp.ok) {
-            const manifestListing = await listResp.json();
+          const manifestListing = await fetchLocalJson("/import/__list__?t=" + Date.now());
+          if (manifestListing) {
             if (Array.isArray(manifestListing.files)) {
               manifestInfoImage = detectInfoImageFromListing(manifestListing.files);
             }
           }
         } catch (_) {}
-        await downscaleTrackImages(tracks);
+        setLoadingState({ title: manifest.albumTitle || manifest.title || "正在打开专辑", detail: "正在优化大尺寸曲绘…", stage: "OPTIMIZING ART", progress: .18 });
+        await downscaleTrackImages(tracks, (current, total) => setLoadingState({
+          detail: `视觉素材优化 ${current} / ${total}`,
+          progress: .18 + .34 * current / Math.max(1, total)
+        }));
         await setTracks(tracks, {
           albumTitle: manifest.albumTitle || manifest.title || "IMPORTED ALBUM",
           artist: manifest.artist || "IMPORTED",
           infoImage: manifestInfoImage
         });
+        finishAlbumLoading();
         return;
       }
 
       // 2) 没有 album.json:用素材清单按文件名前缀自动配对(与网页端文件夹导入同一套规则)
       let listing = null;
       try {
-        const resp = await fetch("/import/__list__");
-        if (resp.ok) listing = await resp.json();
+        listing = await fetchLocalJson("/import/__list__", 4000);
       } catch (_) {}
       if (!listing || !Array.isArray(listing.files)) throw new Error("找不到 album.json 或素材清单");
       const infoImage = detectInfoImageFromListing(listing.files);
@@ -1633,15 +1854,20 @@
           startAt: 0
         };
       });
-      await downscaleTrackImages(tracks);
+      setLoadingState({ title: listing.title || "正在打开专辑", detail: "正在优化大尺寸曲绘…", stage: "OPTIMIZING ART", progress: .18 });
+      await downscaleTrackImages(tracks, (current, total) => setLoadingState({
+        detail: `视觉素材优化 ${current} / ${total}`,
+        progress: .18 + .34 * current / Math.max(1, total)
+      }));
       await setTracks(tracks, {
         albumTitle: listing.title || "导入专辑",
         artist: "IMPORTED",
         infoImage
       });
+      finishAlbumLoading();
       if (!imageNames.length) showToast("未找到图片：已为每首歌生成程序化视觉底图", 4200);
     } catch (error) {
-      showToast(`导入专辑加载失败：${error.message}`, 4200);
+      failAlbumLoading(`导入专辑加载失败：${error.message}`);
     }
   }
 
@@ -1952,7 +2178,7 @@
   function drawWaveform(ctx, w, h, y, amplitude, color, lineWidth = 1) {
     const data = state.timeData;
     ctx.beginPath();
-    const points = PERFORMANCE.enabled ? 96 : 160;
+    const points = PERFORMANCE.enabled ? 72 : 160;
     for (let i = 0; i < points; i++) {
       const x = i / (points - 1) * w;
       const sample = data && state.playing ? (data[Math.floor(i / points * data.length)] - 128) / 128 : (PERFORMANCE.enabled ? 0 : Math.sin(state.fakePhase * 3 + i * .28) * .18);
@@ -1974,8 +2200,8 @@
 
     if (skin === "stamp") {
       ctx.lineWidth = 1;
-      const rowCount = PERFORMANCE.enabled ? 5 : 7;
-      const lineStep = PERFORMANCE.enabled ? 24 : 14;
+      const rowCount = PERFORMANCE.enabled ? 4 : 7;
+      const lineStep = PERFORMANCE.enabled ? 32 : 14;
       for (let row = 0; row < rowCount; row++) {
         ctx.beginPath();
         for (let x = -20; x <= w + 20; x += lineStep) {
@@ -2042,6 +2268,7 @@
 
   const renderClock = {
     rafId: 0,
+    timerId: 0,
     needsFrame: true,
     lastVisual: 0,
     lastProgress: 0,
@@ -2053,7 +2280,26 @@
   function requestVisualFrame(force = false) {
     if (force) renderClock.needsFrame = true;
     if (document.hidden || renderClock.rafId) return;
+    if (renderClock.timerId) {
+      if (!force) return;
+      clearTimeout(renderClock.timerId);
+      renderClock.timerId = 0;
+    }
     renderClock.rafId = requestAnimationFrame(animationLoop);
+  }
+
+  function scheduleContinuousFrame() {
+    if (!PERFORMANCE.webView) {
+      requestVisualFrame();
+      return;
+    }
+    if (renderClock.timerId) return;
+    // 旧 WebView 即使隔帧不绘制，持续 60fps 请求 rAF 仍会让渲染线程保持
+    // 忙碌。按目标帧率真正休眠，再用 rAF 对齐合成时机。
+    renderClock.timerId = window.setTimeout(() => {
+      renderClock.timerId = 0;
+      requestVisualFrame();
+    }, Math.max(16, Math.round(1000 / PERFORMANCE.targetFps)));
   }
 
   function adaptRenderQuality(renderCost, frameGap) {
@@ -2130,7 +2376,7 @@
     }
 
     if (!PERFORMANCE.enabled || state.playing || state.transitioning || renderClock.needsFrame) {
-      requestVisualFrame();
+      scheduleContinuousFrame();
     }
   }
 
@@ -2239,6 +2485,7 @@
       state.objectUrls.push(url);
       setInfoImage(url);
     });
+    els.loadingSkipBtn?.addEventListener("click", requestLoadingSkip);
     els.cleanBtn.addEventListener("click", toggleClean);
     $$('[data-set-skin]').forEach((button) => button.addEventListener("click", () => setSkin(button.dataset.setSkin)));
 
