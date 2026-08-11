@@ -1,6 +1,7 @@
 (() => {
   "use strict";
 
+  const TRANSITION_KEY = "melodio-album-transition-v2";
   const state = {
     library: null,
     switching: false,
@@ -52,63 +53,61 @@
     button.className = `album-edge-rail album-edge-${side}`;
     button.dataset.side = side;
     button.innerHTML = `
-      <span class="album-edge-spine" aria-hidden="true"></span>
-      <span class="album-edge-arrow" aria-hidden="true">${side === "left" ? "‹" : "›"}</span>
       <span class="album-edge-cover" aria-hidden="true"></span>
-      <span class="album-edge-copy">
-        <span class="album-edge-kicker">${side === "left" ? "PREVIOUS ALBUM" : "NEXT ALBUM"}</span>
-        <strong class="album-edge-title">—</strong>
-        <span class="album-edge-meta">—</span>
-      </span>`;
+      <span class="album-edge-arrow" aria-hidden="true">${side === "left" ? "‹" : "›"}</span>`;
 
     let pointerId = null;
     let startX = 0;
-    let moved = false;
+    let dragged = false;
+    let suppressClick = false;
+
+    const resetPointer = () => {
+      pointerId = null;
+      button.classList.remove("is-pressed");
+      button.style.removeProperty("--rail-pull");
+      window.setTimeout(() => { dragged = false; }, 0);
+    };
 
     button.addEventListener("pointerdown", (event) => {
       if (state.switching) return;
       pointerId = event.pointerId;
       startX = event.clientX;
-      moved = false;
+      dragged = false;
+      suppressClick = false;
       button.setPointerCapture?.(pointerId);
-      button.classList.add("is-dragging");
+      button.classList.add("is-pressed");
     });
 
     button.addEventListener("pointermove", (event) => {
       if (pointerId !== event.pointerId) return;
-      const delta = side === "left" ? event.clientX - startX : startX - event.clientX;
-      if (Math.abs(delta) > 6) moved = true;
-      button.classList.toggle("is-expanded", delta > 12);
-      button.style.setProperty("--edge-drag", `${Math.max(0, Math.min(72, delta))}px`);
+      const inward = side === "left" ? event.clientX - startX : startX - event.clientX;
+      if (Math.abs(inward) > 7) dragged = true;
+      const pull = Math.max(0, Math.min(16, inward));
+      button.style.setProperty("--rail-pull", `${side === "left" ? pull : -pull}px`);
     });
 
-    const finishPointer = (event) => {
+    button.addEventListener("pointerup", (event) => {
       if (pointerId !== event.pointerId) return;
-      const delta = side === "left" ? event.clientX - startX : startX - event.clientX;
-      pointerId = null;
-      button.classList.remove("is-dragging");
-      button.style.removeProperty("--edge-drag");
-      if (delta > 54) {
+      const inward = side === "left" ? event.clientX - startX : startX - event.clientX;
+      if (inward > 34) {
+        suppressClick = true;
         event.preventDefault();
         activateRail(button);
-      } else {
-        window.setTimeout(() => button.classList.remove("is-expanded"), 140);
       }
-    };
+      resetPointer();
+    });
 
-    button.addEventListener("pointerup", finishPointer);
-    button.addEventListener("pointercancel", finishPointer);
+    button.addEventListener("pointercancel", resetPointer);
     button.addEventListener("click", (event) => {
-      if (moved) {
-        moved = false;
+      if (suppressClick) {
+        suppressClick = false;
         event.preventDefault();
         return;
       }
+      if (dragged) return;
       activateRail(button);
     });
 
-    button.addEventListener("focus", () => button.classList.add("is-expanded"));
-    button.addEventListener("blur", () => button.classList.remove("is-expanded"));
     $("#app")?.appendChild(button);
     return button;
   }
@@ -118,14 +117,13 @@
     button.hidden = false;
     button.classList.toggle("is-empty", !album);
     button.dataset.albumId = album?.id || "";
-    button.querySelector(".album-edge-title").textContent = album?.title || "仅一张专辑";
-    button.querySelector(".album-edge-meta").textContent = album ? `${album.trackCount || 0} TRACKS` : "点此管理专辑";
     const cover = button.querySelector(".album-edge-cover");
     if (cover) {
       cover.style.backgroundImage = album?.cover ? `url("${String(album.cover).replace(/"/g, "\\\"")}")` : "none";
       cover.classList.toggle("has-cover", Boolean(album?.cover));
     }
-    button.setAttribute("aria-label", album ? `${button.dataset.side === "left" ? "上一张" : "下一张"}专辑：${album.title}` : "打开专辑管理");
+    const direction = button.dataset.side === "left" ? "上一张" : "下一张";
+    button.setAttribute("aria-label", album ? `${direction}专辑：${album.title}` : "打开专辑管理");
   }
 
   function renderRails(library) {
@@ -135,10 +133,11 @@
     const next = neighbor(library, 1);
     populateRail(state.rails.prev, prev);
     populateRail(state.rails.next, next);
-    document.body.classList.toggle("has-album-rails", Boolean(prev || next));
+    document.body.classList.toggle("has-album-rails", true);
   }
 
   function activateRail(button) {
+    if (state.switching) return;
     const id = button?.dataset.albumId;
     if (!id) {
       openLibraryOverview();
@@ -147,41 +146,89 @@
     switchAlbum(id, button.dataset.side === "left" ? "prev" : "next");
   }
 
+  function rememberTransition(direction, id) {
+    const payload = {
+      direction,
+      id,
+      skin: document.body.dataset.skin || "stamp",
+      at: Date.now()
+    };
+    try { sessionStorage.setItem(TRANSITION_KEY, JSON.stringify(payload)); } catch (_) {}
+    return payload;
+  }
+
+  function readTransition() {
+    try {
+      const raw = sessionStorage.getItem(TRANSITION_KEY);
+      if (!raw) return null;
+      const value = JSON.parse(raw);
+      if (!value || Date.now() - Number(value.at || 0) > 12000) {
+        sessionStorage.removeItem(TRANSITION_KEY);
+        return null;
+      }
+      return value;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function clearTransition() {
+    try { sessionStorage.removeItem(TRANSITION_KEY); } catch (_) {}
+  }
+
+  function ensureCurtain(direction, covered = false) {
+    let curtain = $(".album-switch-curtain");
+    if (!curtain) {
+      curtain = document.createElement("div");
+      curtain.className = "album-switch-curtain";
+      curtain.setAttribute("aria-hidden", "true");
+      $("#app")?.appendChild(curtain);
+    }
+    document.body.dataset.albumSwitchDirection = direction;
+    curtain.classList.toggle("is-covering", covered);
+    curtain.classList.remove("is-revealing");
+    return curtain;
+  }
+
   async function switchAlbum(id, direction = "next") {
     if (!id || state.switching || id === state.library?.currentId) return;
     state.switching = true;
-    document.body.dataset.albumSwitchDirection = direction;
+    const pending = rememberTransition(direction, id);
+    const curtain = ensureCurtain(direction, false);
     document.body.classList.add("is-album-exiting");
-    sessionStorage.setItem("melodio-album-entry", direction);
-    await sleep(230);
+    requestAnimationFrame(() => requestAnimationFrame(() => curtain.classList.add("is-covering")));
+    await sleep(250);
 
     if (mockLibrary) {
       const index = mockLibrary.albums.findIndex((album) => album.id === id);
       if (index >= 0) mockLibrary.currentId = id;
-      document.body.classList.remove("is-album-exiting");
-      document.body.classList.add("is-album-entering");
-      state.switching = false;
       state.library = mockLibrary;
       renderRails(state.library);
-      setTimeout(() => document.body.classList.remove("is-album-entering"), 460);
+      document.body.classList.remove("is-album-exiting");
+      document.body.classList.add("is-album-entering");
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        document.body.classList.add("is-album-entering-ready");
+        curtain.classList.add("is-revealing");
+      }));
+      window.setTimeout(() => {
+        document.body.classList.remove("is-album-entering", "is-album-entering-ready");
+        curtain.remove();
+        state.switching = false;
+        clearTransition();
+      }, 560);
       return;
     }
 
     try {
       if (window.MelodioNative?.switchAlbum) {
         if (!window.MelodioNative.switchAlbum(id)) throw new Error("album not found");
-        const url = new URL(location.href);
-        url.searchParams.set("imported", "1");
-        url.searchParams.set("performance", url.searchParams.get("performance") || "auto");
-        url.searchParams.set("album", id);
-        location.replace(url.toString());
-        return;
+      } else {
+        const response = await fetch(`/library/__switch__?id=${encodeURIComponent(id)}&t=${Date.now()}`, {
+          method: "POST",
+          cache: "no-store"
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
       }
-      const response = await fetch(`/library/__switch__?id=${encodeURIComponent(id)}&t=${Date.now()}`, {
-        method: "POST",
-        cache: "no-store"
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const url = new URL(location.href);
       url.searchParams.set("imported", "1");
       url.searchParams.set("performance", url.searchParams.get("performance") || "auto");
@@ -190,7 +237,10 @@
     } catch (_) {
       state.switching = false;
       document.body.classList.remove("is-album-exiting");
-      sessionStorage.removeItem("melodio-album-entry");
+      curtain.classList.add("is-revealing");
+      window.setTimeout(() => curtain.remove(), 360);
+      clearTransition();
+      void pending;
     }
   }
 
@@ -245,7 +295,7 @@
       });
     }
 
-    const hint = document.querySelector(".album-hint");
+    const hint = $(".album-hint");
     if (hint) hint.textContent = "点一次选择 · 再点一次载入 · 播放页左右边缘可直接切专辑";
     welcome.classList.remove("is-hidden");
   }
@@ -293,7 +343,7 @@
         nextLibrary = await response.json();
       }
       if (id === state.library.currentId && nextLibrary.currentId) {
-        sessionStorage.setItem("melodio-album-entry", "next");
+        rememberTransition("next", nextLibrary.currentId);
         const url = new URL(location.href);
         url.searchParams.set("imported", "1");
         location.replace(url.toString());
@@ -337,9 +387,6 @@
           const row = mutation.target;
           if (!(row instanceof HTMLElement) || !row.classList.contains("touch-track-row")) continue;
           if (!row.classList.contains("is-active")) continue;
-          // 只响应“非选中 → 选中”这一次状态变化。动画类自身的增删也会
-          // 触发 MutationObserver；若不检查旧状态，会形成无限微任务循环，
-          // 直接打满 WebView 主线程并让切歌永久卡住。
           const wasActive = String(mutation.oldValue || "").split(/\s+/).includes("is-active");
           if (wasActive) continue;
           row.classList.remove("is-motion-enter");
@@ -364,20 +411,57 @@
     }
   }
 
-  function applyEntryMotion() {
-    const direction = sessionStorage.getItem("melodio-album-entry");
-    if (!direction) return;
-    sessionStorage.removeItem("melodio-album-entry");
-    document.body.dataset.albumSwitchDirection = direction;
+  function completePendingEntry(pending) {
+    const curtain = ensureCurtain(pending.direction || "next", true);
+    document.body.classList.remove("is-album-switch-loading");
     document.body.classList.add("is-album-entering");
-    requestAnimationFrame(() => requestAnimationFrame(() => document.body.classList.add("is-album-entering-ready")));
-    setTimeout(() => document.body.classList.remove("is-album-entering", "is-album-entering-ready"), 520);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      document.body.classList.add("is-album-entering-ready");
+      curtain.classList.add("is-revealing");
+    }));
+    window.setTimeout(() => {
+      document.body.classList.remove("is-album-entering", "is-album-entering-ready");
+      curtain.remove();
+      clearTransition();
+      state.switching = false;
+    }, 580);
+  }
+
+  function applyPendingTransition() {
+    const pending = readTransition();
+    if (!pending) return;
+    state.switching = true;
+    document.body.dataset.albumSwitchDirection = pending.direction || "next";
+    document.body.classList.add("is-album-switch-loading");
+    ensureCurtain(pending.direction || "next", true);
+    if (pending.skin && window.Melodio?.setSkin) {
+      try { window.Melodio.setSkin(pending.skin); } catch (_) {}
+    }
+
+    const panel = $("#loadingPanel");
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      if (panel?.classList.contains("is-active")) return;
+      done = true;
+      observer?.disconnect();
+      completePendingEntry(pending);
+    };
+    const observer = panel ? new MutationObserver(finish) : null;
+    observer?.observe(panel, { attributes: true, attributeFilter: ["class"] });
+    requestAnimationFrame(finish);
+    window.setTimeout(() => {
+      if (done) return;
+      done = true;
+      observer?.disconnect();
+      completePendingEntry(pending);
+    }, 7000);
   }
 
   async function init() {
     installOverviewInterceptors();
     installMotionPolish();
-    applyEntryMotion();
+    applyPendingTransition();
     const library = await fetchLibrary();
     if (!library) return;
     state.library = library;
