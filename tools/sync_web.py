@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 """把 web/ 的 H5 源同步进 APK assets。
 
-只同步运行时真正需要的三个文件。不要用 copytree 整目录复制 ——
+只同步运行时真正需要的文件。不要用 copytree 整目录复制 ——
 web/ 里还有 README.md / start.bat / start.command / example-album.json
 这些纯开发期文件，整目录复制会把它们重新打进 APK（v0.5.15 已专门清理过）。
 """
 from pathlib import Path
 import shutil
 
-RUNTIME_FILES = ("index.html", "app.js", "styles.css")
+RUNTIME_FILES = (
+    "index.html",
+    "app.js",
+    "styles.css",
+    "album-library.js",
+    "mobile-polish.css",
+)
 # 历史上被 copytree 误打进 APK 的开发期文件，同步时顺手清掉
 STALE_FILES = ("README.md", "start.bat", "start.command", "example-album.json", "config.js")
 
