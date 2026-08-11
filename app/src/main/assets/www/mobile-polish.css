@@ -96,11 +96,9 @@ body[data-skin="film"] .album-edge-rail { color: #f2b36b; background: rgba(12,11
 body[data-skin="glass"] .album-edge-rail { color: #c8f3ef; background: linear-gradient(145deg, rgba(18,44,52,.94), rgba(18,20,42,.94)); border-color: rgba(191,239,235,.2); }
 html[data-performance="mobile"] .album-edge-rail { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
 html[data-runtime="android-webview"] .vinyl-disc-spin {
-  animation-duration: 16s !important;
-  animation-timing-function: steps(48, end) !important;
-  will-change: auto !important;
+  /* 约 30 个位置/秒；避免旧 WebView 连续重绘，也不能退回曾造成明显跳动的 48 步/圈。 */
+  animation-timing-function: steps(246, end) !important;
 }
-
 body.is-album-exiting .stage-header, body.is-album-exiting .composition, body.is-album-exiting .stage-footer { pointer-events: none; transition: transform 230ms cubic-bezier(.4,0,.7,.2), opacity 210ms ease; }
 body[data-album-switch-direction="next"].is-album-exiting .stage-header, body[data-album-switch-direction="next"].is-album-exiting .composition, body[data-album-switch-direction="next"].is-album-exiting .stage-footer { transform: translate3d(-18px,0,0); opacity: .14; }
 body[data-album-switch-direction="prev"].is-album-exiting .stage-header, body[data-album-switch-direction="prev"].is-album-exiting .composition, body[data-album-switch-direction="prev"].is-album-exiting .stage-footer { transform: translate3d(18px,0,0); opacity: .14; }

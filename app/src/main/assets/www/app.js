@@ -101,11 +101,12 @@
       android,
       webView,
       mode,
-      spectrumBands: enabled ? 24 : 48,
-      targetFps: enabled ? 20 : 60,
-      minimumFps: enabled ? 15 : 60,
-      cssInterval: enabled ? 50 : 16,
-      progressInterval: enabled ? 160 : 50,
+      spectrumBands: enabled ? 32 : 48,
+      targetFps: enabled ? 30 : 60,
+      canvasFps: enabled ? 15 : 60,
+      minimumFps: enabled ? 24 : 60,
+      cssInterval: enabled ? 34 : 16,
+      progressInterval: enabled ? 100 : 50,
       dprCap: enabled ? .75 : 1.5,
       renderScale: enabled ? .72 : 1,
       minRenderScale: enabled ? .54 : 1,
@@ -2271,6 +2272,7 @@
     timerId: 0,
     needsFrame: true,
     lastVisual: 0,
+    lastCanvas: 0,
     lastProgress: 0,
     lastDrawAt: 0,
     sampleCount: 0,
@@ -2296,10 +2298,13 @@
     if (renderClock.timerId) return;
     // 旧 WebView 即使隔帧不绘制，持续 60fps 请求 rAF 仍会让渲染线程保持
     // 忙碌。按目标帧率真正休眠，再用 rAF 对齐合成时机。
+    const interval = 1000 / PERFORMANCE.targetFps;
+    const elapsed = renderClock.lastVisual ? performance.now() - renderClock.lastVisual : interval;
+    const frameLead = 12;
     renderClock.timerId = window.setTimeout(() => {
       renderClock.timerId = 0;
       requestVisualFrame();
-    }, Math.max(16, Math.round(1000 / PERFORMANCE.targetFps)));
+    }, Math.max(0, Math.round(interval - elapsed - frameLead)));
   }
 
   function adaptRenderQuality(renderCost, frameGap) {
@@ -2356,12 +2361,18 @@
     if (!continuous && !renderClock.needsFrame) return;
 
     const visualInterval = 1000 / PERFORMANCE.targetFps;
-    const visualDue = renderClock.needsFrame || !renderClock.lastVisual || time - renderClock.lastVisual >= visualInterval;
+    // rAF 时间戳会在目标边界前抖动约 0.1–1ms；严格比较会错过整帧，
+    // 让标称 30fps 退化成约 15fps。保留 2ms 的合成容差。
+    const visualDue = renderClock.needsFrame || !renderClock.lastVisual || time - renderClock.lastVisual >= visualInterval - 2;
     if (visualDue) {
       const startedAt = performance.now();
       const forceStyles = renderClock.needsFrame;
       updateAudioLevels({ writeStyles: true, forceStyles });
-      drawAmbient(time);
+      const canvasInterval = 1000 / PERFORMANCE.canvasFps;
+      if (forceStyles || !renderClock.lastCanvas || time - renderClock.lastCanvas >= canvasInterval) {
+        drawAmbient(time);
+        renderClock.lastCanvas = time;
+      }
       const finishedAt = performance.now();
       const frameGap = renderClock.lastDrawAt ? finishedAt - renderClock.lastDrawAt : visualInterval;
       renderClock.lastDrawAt = finishedAt;
@@ -2447,6 +2458,7 @@
         android: PERFORMANCE.android,
         webView: PERFORMANCE.webView,
         targetFps: PERFORMANCE.targetFps,
+        canvasFps: PERFORMANCE.canvasFps,
         renderScale: PERFORMANCE.renderScale,
         effectiveDpr: canvas.dpr,
         canvasPixels: els.canvas.width * els.canvas.height,
