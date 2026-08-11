@@ -21,6 +21,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewClientCompat
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import kotlin.concurrent.thread
 
@@ -29,13 +30,17 @@ class MainActivity : Activity() {
     private lateinit var webView: WebView
     private var pendingFileCallback: ValueCallback<Array<Uri>>? = null
 
-    /** 素材导入目录：选择文件夹后复制到这里的文件，经 /import/ 路径提供给页面 */
-    private val importDir by lazy { File(filesDir, "import") }
+    /** v0.5.x 单专辑目录；首次启动新版时迁移进 albums/，之后不再直接使用。 */
+    private val legacyImportDir by lazy { File(filesDir, "import") }
+
+    /** 多专辑库。每张专辑一个独立子目录，页面仍通过动态 /import/ 兼容路径访问当前专辑。 */
+    private val albumsRoot by lazy { File(filesDir, "albums") }
+    private val activeAlbumIdFile by lazy { File(filesDir, ".active-album") }
+    private val emptyAlbumDir by lazy { File(filesDir, ".empty-album") }
 
     private val assetLoader by lazy {
         WebViewAssetLoader.Builder()
             .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
-            .addPathHandler("/import/", WebViewAssetLoader.InternalStoragePathHandler(this, importDir))
             .build()
     }
 
@@ -44,6 +49,8 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         enterImmersiveMode()
+        migrateLegacyImportIfNeeded()
+        ensureActiveAlbum()
 
         webView = WebView(this).apply {
             layoutParams = ViewGroup.LayoutParams(
@@ -68,8 +75,6 @@ class MainActivity : Activity() {
                     fileChooserParams: FileChooserParams
                 ): Boolean {
                     pendingFileCallback = filePathCallback
-                    // 单图选择（<input type="file" accept="image/*">）走系统图片选择器；
-                    // 其余（文件夹 input 的 webkitdirectory 无 accept）保持目录树选择。
                     val isImagePick = fileChooserParams.mode == FileChooserParams.MODE_OPEN
                         && fileChooserParams.acceptTypes.any { it.startsWith("image/", ignoreCase = true) }
                     return try {
@@ -104,50 +109,62 @@ class MainActivity : Activity() {
                     view: WebView,
                     request: android.webkit.WebResourceRequest
                 ): android.webkit.WebResourceResponse? {
-                    val url = request.url.toString()
-                    // H5 侧的「删除导入专辑」：清空 import 目录并返回 200
-                    if (url.startsWith(IMPORT_DELETE_URL)) {
-                        importDir.deleteRecursively()
-                        return android.webkit.WebResourceResponse(
-                            "text/plain",
-                            "utf-8",
-                            java.io.ByteArrayInputStream("ok".toByteArray())
-                        )
+                    val url = request.url
+                    val urlText = url.toString()
+
+                    if (urlText.startsWith(LIBRARY_LIST_URL)) {
+                        return jsonResponse(buildLibraryJson())
                     }
-                    // H5 侧「无 album.json 的素材自动配对」：返回 import 目录文件清单 + 专辑名(文件夹名)
-                    if (url.startsWith(IMPORT_LIST_URL)) {
-                        val files = if (importDir.exists()) {
-                            importDir.walkTopDown()
+                    if (urlText.startsWith(LIBRARY_SWITCH_URL)) {
+                        val id = url.getQueryParameter("id")
+                        if (id != null && setActiveAlbumId(id)) {
+                            return jsonResponse(buildLibraryJson())
+                        }
+                        return textResponse("album not found", 404, "Not Found")
+                    }
+                    if (urlText.startsWith(LIBRARY_DELETE_URL)) {
+                        val id = url.getQueryParameter("id")
+                        if (id.isNullOrBlank()) return textResponse("missing id", 400, "Bad Request")
+                        if (!deleteAlbum(id)) return textResponse("album not found", 404, "Not Found")
+                        return jsonResponse(buildLibraryJson())
+                    }
+                    if (urlText.startsWith(LIBRARY_COVER_URL)) {
+                        val id = url.getQueryParameter("id") ?: return textResponse("missing id", 400, "Bad Request")
+                        val dir = albumDirById(id) ?: return textResponse("album not found", 404, "Not Found")
+                        val cover = findAlbumCover(dir) ?: return textResponse("cover not found", 404, "Not Found")
+                        return fileResponse(cover)
+                    }
+
+                    if (urlText.startsWith(IMPORT_DELETE_URL)) {
+                        activeAlbumId()?.let { deleteAlbum(it) }
+                        return textResponse("ok")
+                    }
+                    if (urlText.startsWith(IMPORT_LIST_URL)) {
+                        val dir = activeAlbumDir()
+                        val files = if (dir.exists()) {
+                            dir.walkTopDown()
                                 .filter { it.isFile }
-                                .map { it.relativeTo(importDir).path.replace('\\', '/') }
+                                .map { it.relativeTo(dir).path.replace('\\', '/') }
                                 .toList()
                         } else emptyList()
                         val json = buildString {
-                            append("{\"title\":\"").append(escapeJson(readMetaTitle() ?: "")).append("\",\"files\":[")
+                            append("{\"title\":\"").append(escapeJson(readMetaTitle(dir) ?: "")).append("\",\"files\":[")
                             append(files.joinToString(",") { "\"" + escapeJson(it) + "\"" })
                             append("]}")
                         }
-                        return android.webkit.WebResourceResponse(
-                            "application/json",
-                            "utf-8",
-                            java.io.ByteArrayInputStream(json.toByteArray())
-                        )
+                        return jsonResponse(json)
                     }
-                    // H5 侧「移除专辑信息图」：删除 import 目录里的 __info__.* 并返回 200
-                    if (url.startsWith(IMPORT_INFO_DELETE_URL)) {
-                        if (importDir.exists()) {
-                            importDir.listFiles { it.name.startsWith("__info__.", ignoreCase = true) }
+                    if (urlText.startsWith(IMPORT_INFO_DELETE_URL)) {
+                        val dir = activeAlbumDir()
+                        if (dir.exists()) {
+                            dir.listFiles { it.name.startsWith("__info__.", ignoreCase = true) }
                                 ?.forEach { it.delete() }
                         }
-                        return android.webkit.WebResourceResponse(
-                            "text/plain",
-                            "utf-8",
-                            java.io.ByteArrayInputStream("ok".toByteArray())
-                        )
+                        return textResponse("ok")
                     }
-                    // 媒体 seek 依赖 HTTP Range 请求，WebViewAssetLoader 不支持 →
-                    // 自己处理 /assets/ 与 /import/ 的 Range，返回 206 + Content-Range
+
                     handleRangeRequest(request)?.let { return it }
+                    serveActiveAlbumFile(request)?.let { return it }
                     return assetLoader.shouldInterceptRequest(request.url)
                 }
             }
@@ -155,9 +172,8 @@ class MainActivity : Activity() {
         setContentView(webView)
 
         if (BuildConfig.DEBUG) WebView.setWebContentsDebuggingEnabled(true)
-        // 已导入过素材(import 目录里有音频)→ 直接进入导入专辑;否则进入欢迎/导入页
-        val hasImportedAudio = importDir.exists()
-            && importDir.listFiles()?.any { it.isFile && it.extension.lowercase() in AUDIO_EXTS } == true
+        val hasImportedAudio = activeAlbumDir().walkTopDown()
+            .any { it.isFile && it.extension.lowercase() in AUDIO_EXTS }
         val url = if (hasImportedAudio) {
             "https://appassets.androidplatform.net/assets/www/index.html?imported=1&performance=auto"
         } else {
@@ -182,20 +198,24 @@ class MainActivity : Activity() {
                     } catch (e: Exception) {
                         Log.w(TAG, "takePersistableUriPermission failed", e)
                     }
+                    val displayName = queryTreeDisplayName(treeUri)?.trim().orEmpty().ifBlank { "导入专辑" }
                     thread {
+                        var targetDir: File? = null
                         try {
-                            copyImportedFiles(treeUri)
-                            // 记住所选文件夹名，作为无 album.json 时的专辑名
-                            queryTreeDisplayName(treeUri)?.let { name ->
-                                File(importDir, ".meta").writeText("""{"title":"${escapeJson(name)}"}""")
-                            }
+                            val importedDir = createAlbumDir()
+                            targetDir = importedDir
+                            copyImportedFiles(treeUri, importedDir)
+                            File(importedDir, ".meta").writeText("""{"title":"${escapeJson(displayName)}"}""")
+                            importedDir.setLastModified(System.currentTimeMillis())
+                            setActiveAlbumId(importedDir.name)
                             runOnUiThread {
-                                Toast.makeText(this, "素材导入完成", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(this, "已加入专辑库", Toast.LENGTH_SHORT).show()
                                 webView.loadUrl(
                                     "https://appassets.androidplatform.net/assets/www/index.html?imported=1&performance=auto"
                                 )
                             }
                         } catch (e: Exception) {
+                            targetDir?.deleteRecursively()
                             Log.e(TAG, "Import failed", e)
                             runOnUiThread {
                                 Toast.makeText(this, "导入失败：${e.message}", Toast.LENGTH_LONG).show()
@@ -204,14 +224,14 @@ class MainActivity : Activity() {
                     }
                 }
             }
-            // H5 侧「添加专辑信息图」：把所选单图复制到 import/__info__.<ext>（覆盖旧图），再通知页面刷新
             REQUEST_PICK_INFO_IMAGE -> {
                 val uri = data?.data
                 if (resultCode == RESULT_OK && uri != null) {
                     thread {
                         try {
-                            importDir.mkdirs()
-                            importDir.listFiles { it.name.startsWith("__info__.", ignoreCase = true) }
+                            val dir = activeAlbumDir()
+                            dir.mkdirs()
+                            dir.listFiles { it.name.startsWith("__info__.", ignoreCase = true) }
                                 ?.forEach { it.delete() }
                             val mime = contentResolver.getType(uri) ?: "image/jpeg"
                             val ext = when (mime) {
@@ -223,7 +243,7 @@ class MainActivity : Activity() {
                                 "image/bmp" -> "bmp"
                                 else -> "jpg"
                             }
-                            val target = File(importDir, "__info__.$ext")
+                            val target = File(dir, "__info__.$ext")
                             contentResolver.openInputStream(uri)?.use { input ->
                                 FileOutputStream(target).use { output -> input.copyTo(output) }
                             }
@@ -248,17 +268,7 @@ class MainActivity : Activity() {
 
     /**
      * 处理媒体 Range 请求（bytes=start-end），返回 206 + Content-Range，使 H5 进度条 seek 生效。
-     *
-     * 关键：**流本身必须从 0 开始，不能自己 skip 到 start**。
-     * WebView 拿到 shouldInterceptRequest 返回的流后，会依据我们给的 Content-Range
-     * 自行丢弃前 start 个字节。若我们再 skip 一次，实际读到的数据来自 2×start ——
-     * 实测请求 offset=1,000,000 拿回的是 2,000,000 处的字节（比例恒为 2.0）。
-     * 后果：seek 到的音频内容全部错位，且过半后 2×start 越过文件尾，解复用器读空报
-     * PIPELINE_ERROR_READ(FFmpegDemuxer: data source error)，元素永远卡在 seeking，
-     * 表现为「4 分多的歌播到 2:33 就停死」（2:33 ≈ 时长的一半）。
-     *
-     * 因此这里只负责：给出正确的 206 状态与 Content-Range/Content-Length 头，
-     * 外加一个上界受限（到 end 为止）的流，偏移交给 WebView 完成。
+     * 流本身必须从 0 开始，不能自己 skip 到 start；WebView 会依据 Content-Range 自行丢弃前 start 字节。
      */
     private fun handleRangeRequest(request: android.webkit.WebResourceRequest): android.webkit.WebResourceResponse? {
         val rangeHeader = request.requestHeaders?.get("Range") ?: return null
@@ -267,26 +277,22 @@ class MainActivity : Activity() {
         val filePath = if (path.startsWith("/import/")) path.removePrefix("/import/") else null
         if (assetPath == null && filePath == null) return null
 
-        // 先只解析 Range，拿到长度前不开流，避免解析失败时漏关
         val m = RANGE_PATTERN.matchEntire(rangeHeader.trim()) ?: return null
         val start = m.groupValues[1].toLongOrNull() ?: return null
 
         val length: Long
         val open: () -> java.io.InputStream
         try {
-            // request.url.path 已是解码后的路径（Uri.getPath()），不能再 decode，
-            // 否则文件名里的字面量 % 会被二次解码。
             if (assetPath != null) {
                 length = assets.openFd(assetPath).use { it.length }
                 open = { assets.open(assetPath) }
             } else {
-                val file = File(importDir, filePath!!)
-                if (!file.exists()) return null
+                val file = safeAlbumFile(activeAlbumDir(), filePath!!) ?: return null
+                if (!file.exists() || !file.isFile) return null
                 length = file.length()
-                open = { java.io.FileInputStream(file) }
+                open = { FileInputStream(file) }
             }
         } catch (e: Exception) {
-            // 压缩存放的 asset 拿不到 openFd 长度等情况：交回 assetLoader 走全量 200
             Log.w(TAG, "Range: cannot size $path", e)
             return null
         }
@@ -312,12 +318,49 @@ class MainActivity : Activity() {
                 "Accept-Ranges" to "bytes",
                 "Content-Length" to (end - start + 1).toString()
             ),
-            // 从 0 开始、到 end 截止：WebView 负责丢弃前 start 字节
             BoundedInputStream(input, end + 1)
         )
     }
 
-    /** 只允许读取前 [limit] 个字节的包装流（配合 WebView 自身的 Range 偏移使用） */
+    private fun serveActiveAlbumFile(request: android.webkit.WebResourceRequest): android.webkit.WebResourceResponse? {
+        val path = request.url.path ?: return null
+        if (!path.startsWith("/import/")) return null
+        val relativePath = path.removePrefix("/import/")
+        if (relativePath.isBlank()) return null
+        val file = safeAlbumFile(activeAlbumDir(), relativePath) ?: return null
+        if (!file.isFile) return null
+        return fileResponse(file)
+    }
+
+    private fun fileResponse(file: File): android.webkit.WebResourceResponse {
+        val ext = file.extension.lowercase()
+        val mime = MIME_MAP[ext] ?: if (ext == "json") "application/json" else "application/octet-stream"
+        val encoding = if (mime.startsWith("text/") || mime == "application/json") "utf-8" else null
+        return android.webkit.WebResourceResponse(mime, encoding, FileInputStream(file))
+    }
+
+    private fun textResponse(
+        text: String,
+        status: Int = 200,
+        reason: String = "OK"
+    ): android.webkit.WebResourceResponse = android.webkit.WebResourceResponse(
+        "text/plain",
+        "utf-8",
+        status,
+        reason,
+        emptyMap(),
+        java.io.ByteArrayInputStream(text.toByteArray())
+    )
+
+    private fun jsonResponse(json: String): android.webkit.WebResourceResponse = android.webkit.WebResourceResponse(
+        "application/json",
+        "utf-8",
+        200,
+        "OK",
+        mapOf("Cache-Control" to "no-store"),
+        java.io.ByteArrayInputStream(json.toByteArray())
+    )
+
     private class BoundedInputStream(
         private val delegate: java.io.InputStream,
         private val limit: Long
@@ -349,24 +392,149 @@ class MainActivity : Activity() {
         }
 
         override fun available(): Int = minOf(delegate.available().toLong(), limit - position).toInt()
-
         override fun close() = delegate.close()
     }
 
-    /** 把用户选择的文件夹复制到应用私有目录 import/，供 WebView 以 /import/ 读取 */
-    private fun copyImportedFiles(treeUri: Uri) {
-        if (importDir.exists()) importDir.deleteRecursively()
-        importDir.mkdirs()
+    private fun listAlbumDirs(): List<File> {
+        albumsRoot.mkdirs()
+        return albumsRoot.listFiles()
+            ?.filter { it.isDirectory && it.name.startsWith("album-") }
+            ?.sortedWith(compareBy<File> { it.lastModified() }.thenBy { it.name })
+            ?: emptyList()
+    }
+
+    private fun albumDirById(id: String): File? {
+        if (!ALBUM_ID_PATTERN.matches(id)) return null
+        val dir = File(albumsRoot, id)
+        return dir.takeIf { it.isDirectory }
+    }
+
+    private fun activeAlbumId(): String? {
+        val stored = runCatching { activeAlbumIdFile.readText().trim() }.getOrNull().orEmpty()
+        return stored.takeIf { it.isNotBlank() && albumDirById(it) != null }
+    }
+
+    private fun activeAlbumDir(): File {
+        val id = activeAlbumId() ?: ensureActiveAlbum()
+        return if (id != null) File(albumsRoot, id) else emptyAlbumDir.apply { mkdirs() }
+    }
+
+    private fun ensureActiveAlbum(): String? {
+        activeAlbumId()?.let { return it }
+        val first = listAlbumDirs().firstOrNull()?.name ?: run {
+            activeAlbumIdFile.delete()
+            return null
+        }
+        activeAlbumIdFile.writeText(first)
+        return first
+    }
+
+    private fun setActiveAlbumId(id: String): Boolean {
+        if (albumDirById(id) == null) return false
+        activeAlbumIdFile.writeText(id)
+        return true
+    }
+
+    private fun createAlbumDir(): File {
+        albumsRoot.mkdirs()
+        var suffix = 0
+        while (true) {
+            val id = buildString {
+                append("album-").append(System.currentTimeMillis())
+                if (suffix > 0) append('-').append(suffix)
+            }
+            val dir = File(albumsRoot, id)
+            if (dir.mkdir()) return dir
+            suffix++
+        }
+    }
+
+    private fun deleteAlbum(id: String): Boolean {
+        val dir = albumDirById(id) ?: return false
+        val wasActive = activeAlbumId() == id
+        if (!dir.deleteRecursively()) return false
+        if (wasActive) {
+            activeAlbumIdFile.delete()
+            ensureActiveAlbum()
+        }
+        return true
+    }
+
+    private fun buildLibraryJson(): String {
+        val current = ensureActiveAlbum().orEmpty()
+        val albums = listAlbumDirs()
+        return buildString {
+            append("{\"currentId\":\"").append(escapeJson(current)).append("\",\"albums\":[")
+            albums.forEachIndexed { index, dir ->
+                if (index > 0) append(',')
+                val title = readMetaTitle(dir).orEmpty().ifBlank { dir.name }
+                val count = dir.walkTopDown().count { it.isFile && it.extension.lowercase() in AUDIO_EXTS }
+                val cover = findAlbumCover(dir)
+                append("{\"id\":\"").append(escapeJson(dir.name))
+                    .append("\",\"title\":\"").append(escapeJson(title))
+                    .append("\",\"trackCount\":").append(count)
+                    .append(",\"cover\":")
+                if (cover != null) {
+                    append("\"/library/__cover__?id=").append(escapeJson(dir.name))
+                        .append("&v=").append(cover.lastModified()).append("\"")
+                } else {
+                    append("\"\"")
+                }
+                append('}')
+            }
+            append("]}")
+        }
+    }
+
+    private fun findAlbumCover(dir: File): File? {
+        val images = dir.walkTopDown()
+            .filter { it.isFile && it.extension.lowercase() in IMAGE_EXTS && !it.name.startsWith("__info__.", ignoreCase = true) }
+            .toList()
+        return images.firstOrNull { it.nameWithoutExtension.equals("cover", ignoreCase = true) }
+            ?: images.sortedBy { it.relativeTo(dir).path.lowercase() }.firstOrNull()
+    }
+
+    private fun migrateLegacyImportIfNeeded() {
+        if (!legacyImportDir.isDirectory) return
+        val hasAudio = legacyImportDir.walkTopDown().any { it.isFile && it.extension.lowercase() in AUDIO_EXTS }
+        if (!hasAudio) return
+        albumsRoot.mkdirs()
+        val target = createAlbumDir()
+        try {
+            if (!legacyImportDir.renameTo(target)) {
+                legacyImportDir.copyRecursively(target, overwrite = true)
+                legacyImportDir.deleteRecursively()
+            }
+            target.setLastModified(System.currentTimeMillis())
+            setActiveAlbumId(target.name)
+            Log.i(TAG, "Migrated legacy import -> ${target.name}")
+        } catch (e: Exception) {
+            target.deleteRecursively()
+            Log.e(TAG, "Legacy import migration failed", e)
+        }
+    }
+
+    private fun safeAlbumFile(root: File, relativePath: String): File? {
+        return try {
+            val rootPath = root.canonicalFile
+            val file = File(root, relativePath).canonicalFile
+            if (file.path == rootPath.path || file.path.startsWith(rootPath.path + File.separator)) file else null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun copyImportedFiles(treeUri: Uri, targetDir: File) {
+        targetDir.mkdirs()
         var audioCount = 0
         var imageCount = 0
-        copyTree(treeUri, null, "", AUDIO_EXTS, IMAGE_EXTS) { isAudio, isImage ->
+        copyTree(treeUri, null, "", targetDir, AUDIO_EXTS, IMAGE_EXTS) { isAudio, isImage ->
             if (isAudio) audioCount++ else if (isImage) imageCount++
         }
-        Log.i(TAG, "Import complete: $audioCount audio, $imageCount images")
+        Log.i(TAG, "Import complete: $audioCount audio, $imageCount images -> ${targetDir.name}")
         if (audioCount == 0) throw IllegalStateException("文件夹中没有音频文件（mp3/wav/flac/ogg/m4a）")
     }
 
-    /** 查询所选文件夹的显示名（DocumentsUI 树根文档的 _display_name） */
     private fun queryTreeDisplayName(treeUri: Uri): String? {
         return try {
             val docId = DocumentsContract.getTreeDocumentId(treeUri)
@@ -384,23 +552,27 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 读取导入时记住的文件夹名（files/import/.meta），每次现读避免缓存旧值 */
-    private fun readMetaTitle(): String? {
+    private fun readMetaTitle(dir: File): String? {
         return try {
-            File(importDir, ".meta").readText()
+            File(dir, ".meta").readText()
                 .let { text -> Regex("\"title\"\\s*:\\s*\"([^\"]*)\"").find(text)?.groupValues?.get(1) }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             null
         }
     }
 
-    private fun escapeJson(s: String) = s.replace("\\", "\\\\").replace("\"", "\\\"")
+    private fun escapeJson(s: String) = s
+        .replace("\\", "\\\\")
+        .replace("\"", "\\\"")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
 
-    /** 递归枚举目录树并复制音频/图片/album.json（保留中文文件名与子目录结构） */
     private fun copyTree(
         treeUri: Uri,
         childDocId: String?,
         relativePath: String,
+        targetRoot: File,
         audioExts: Set<String>,
         imageExts: Set<String>,
         onCopied: (isAudio: Boolean, isImage: Boolean) -> Unit
@@ -421,14 +593,14 @@ class MainActivity : Activity() {
                 val mime = cursor.getString(mimeCol) ?: ""
                 val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, childId)
                 if (mime == "vnd.android.document/directory") {
-                    copyTree(treeUri, childId, relativePath + name + "/", audioExts, imageExts, onCopied)
+                    copyTree(treeUri, childId, relativePath + name + "/", targetRoot, audioExts, imageExts, onCopied)
                 } else {
                     val ext = name.substringAfterLast('.', "").lowercase()
                     val isAlbumJson = name.equals("album.json", ignoreCase = true)
                     val isAudio = audioExts.contains(ext)
                     val isImage = imageExts.contains(ext)
                     if (!isAlbumJson && !isAudio && !isImage) continue
-                    val target = File(importDir, relativePath + name)
+                    val target = safeAlbumFile(targetRoot, relativePath + name) ?: continue
                     target.parentFile?.mkdirs()
                     contentResolver.openInputStream(docUri)?.use { input ->
                         FileOutputStream(target).use { output -> input.copyTo(output) }
@@ -443,8 +615,7 @@ class MainActivity : Activity() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         WindowInsetsControllerCompat(window, window.decorView).apply {
             hide(WindowInsetsCompat.Type.systemBars())
-            systemBarsBehavior =
-                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
     }
 
@@ -497,8 +668,13 @@ class MainActivity : Activity() {
         private const val IMPORT_DELETE_URL = "https://appassets.androidplatform.net/import/__delete__"
         private const val IMPORT_LIST_URL = "https://appassets.androidplatform.net/import/__list__"
         private const val IMPORT_INFO_DELETE_URL = "https://appassets.androidplatform.net/import/__info-delete__"
+        private const val LIBRARY_LIST_URL = "https://appassets.androidplatform.net/library/__list__"
+        private const val LIBRARY_SWITCH_URL = "https://appassets.androidplatform.net/library/__switch__"
+        private const val LIBRARY_DELETE_URL = "https://appassets.androidplatform.net/library/__delete__"
+        private const val LIBRARY_COVER_URL = "https://appassets.androidplatform.net/library/__cover__"
         private val AUDIO_EXTS = setOf("mp3", "wav", "flac", "ogg", "m4a", "aac", "opus")
         private val IMAGE_EXTS = setOf("jpg", "jpeg", "png", "webp", "gif", "avif", "bmp")
+        private val ALBUM_ID_PATTERN = Regex("""album-[A-Za-z0-9._-]+""")
         private val RANGE_PATTERN = Regex("""bytes=(\d+)-(\d*)""")
         private val MIME_MAP = mapOf(
             "mp3" to "audio/mpeg",
@@ -512,7 +688,11 @@ class MainActivity : Activity() {
             "jpeg" to "image/jpeg",
             "png" to "image/png",
             "webp" to "image/webp",
-            "gif" to "image/gif"
+            "gif" to "image/gif",
+            "avif" to "image/avif",
+            "bmp" to "image/bmp",
+            "svg" to "image/svg+xml",
+            "json" to "application/json"
         )
     }
 }
