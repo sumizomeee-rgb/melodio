@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const TRANSITION_KEY = "melodio-album-transition-v2";
+  const TRANSITION_KEY = "melodio-album-transition-v3";
   const state = {
     library: null,
     switching: false,
@@ -13,6 +13,131 @@
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const isAndroidLibrary = location.hostname === "appassets.androidplatform.net";
   const mockLibrary = window.__MELODIO_LIBRARY_MOCK__ || null;
+
+  function installVisualContinuity() {
+    if (document.getElementById("melodio-library-visual-v3")) return;
+    const style = document.createElement("style");
+    style.id = "melodio-library-visual-v3";
+    style.textContent = `
+      body.is-album-switch-loading #welcome,
+      body.is-album-switch-loading .welcome-panel,
+      body.is-album-switch-loading .loading-panel {
+        opacity: 0 !important;
+        visibility: hidden !important;
+        pointer-events: none !important;
+      }
+
+      body[data-skin="film"] .touch-album-panel::before {
+        background: linear-gradient(90deg,
+          rgba(14,13,12,0) 0%,
+          rgba(14,13,12,.10) 16%,
+          rgba(14,13,12,.30) 46%,
+          rgba(14,13,12,.48) 100%) !important;
+      }
+      body[data-skin="glass"] .touch-album-panel::before {
+        background: linear-gradient(90deg,
+          rgba(12,20,31,0) 0%,
+          rgba(12,20,31,.08) 18%,
+          rgba(12,20,31,.25) 50%,
+          rgba(12,20,31,.42) 100%) !important;
+      }
+
+      html[data-performance="mobile"] body[data-skin="stamp"] #ambientCanvas {
+        opacity: .09 !important;
+        clip-path: none !important;
+        -webkit-mask-image: linear-gradient(90deg,
+          #000 0%, #000 40%,
+          rgba(0,0,0,.56) 61%,
+          rgba(0,0,0,.16) 84%,
+          transparent 100%) !important;
+        mask-image: linear-gradient(90deg,
+          #000 0%, #000 40%,
+          rgba(0,0,0,.56) 61%,
+          rgba(0,0,0,.16) 84%,
+          transparent 100%) !important;
+      }
+      html[data-performance="mobile"] body[data-skin="stamp"] .spectrum-ruler {
+        left: 5% !important;
+        width: 58% !important;
+        right: auto !important;
+        height: clamp(38px, 7.5vh, 72px) !important;
+        opacity: calc(.28 + var(--energy) * .42) !important;
+        -webkit-mask-image: linear-gradient(90deg,
+          transparent 0%, #000 7%, #000 64%,
+          rgba(0,0,0,.42) 82%, transparent 100%) !important;
+        mask-image: linear-gradient(90deg,
+          transparent 0%, #000 7%, #000 64%,
+          rgba(0,0,0,.42) 82%, transparent 100%) !important;
+      }
+
+      html[data-performance="mobile"] body[data-skin="film"] #ambientCanvas {
+        opacity: .15 !important;
+        clip-path: none !important;
+        -webkit-mask-image: linear-gradient(90deg,
+          #000 0%, #000 43%,
+          rgba(0,0,0,.58) 64%,
+          rgba(0,0,0,.18) 86%,
+          transparent 100%) !important;
+        mask-image: linear-gradient(90deg,
+          #000 0%, #000 43%,
+          rgba(0,0,0,.58) 64%,
+          rgba(0,0,0,.18) 86%,
+          transparent 100%) !important;
+      }
+      html[data-performance="mobile"] body[data-skin="film"] .spectrum-ruler {
+        left: 4.5% !important;
+        width: 61% !important;
+        right: auto !important;
+        height: clamp(62px, 13.5vh, 136px) !important;
+        opacity: calc(.38 + var(--energy) * .48) !important;
+        -webkit-mask-image: linear-gradient(90deg,
+          transparent 0%, #000 5%, #000 62%,
+          rgba(0,0,0,.45) 82%, transparent 100%) !important;
+        mask-image: linear-gradient(90deg,
+          transparent 0%, #000 5%, #000 62%,
+          rgba(0,0,0,.45) 82%, transparent 100%) !important;
+      }
+
+      html[data-performance="mobile"] body[data-skin="glass"] #ambientCanvas {
+        opacity: .34 !important;
+        clip-path: none !important;
+        -webkit-mask-image: linear-gradient(90deg,
+          #000 0%, #000 46%,
+          rgba(0,0,0,.48) 68%,
+          rgba(0,0,0,.18) 88%,
+          transparent 100%) !important;
+        mask-image: linear-gradient(90deg,
+          #000 0%, #000 46%,
+          rgba(0,0,0,.48) 68%,
+          rgba(0,0,0,.18) 88%,
+          transparent 100%) !important;
+      }
+
+      .touch-track-row.is-active .state-mark {
+        animation: none !important;
+        transform: scale(calc(.88 + var(--energy) * .18)) !important;
+        opacity: .96 !important;
+        transition: transform 70ms linear, opacity 70ms linear, box-shadow 70ms linear !important;
+      }
+      body[data-skin="stamp"] .touch-track-row.is-active .state-mark {
+        box-shadow: 0 0 0 3px rgba(255,248,233,.08), 0 0 12px rgba(255,248,233,.20);
+      }
+      body[data-skin="film"] .touch-track-row.is-active .state-mark {
+        box-shadow: 0 0 0 3px rgba(22,15,11,.08), 0 0 14px rgba(242,179,107,.28);
+      }
+      body[data-skin="glass"] .touch-track-row.is-active .state-mark {
+        box-shadow: 0 0 0 3px rgba(233,251,255,.08), 0 0 16px rgba(188,231,223,.30);
+      }
+
+      body.is-album-exiting #welcome,
+      body.is-album-entering #welcome {
+        opacity: 0 !important;
+        visibility: hidden !important;
+        pointer-events: none !important;
+      }
+    `;
+    document.head.appendChild(style);
+  }
 
   async function fetchLibrary() {
     if (mockLibrary) return mockLibrary;
@@ -146,10 +271,11 @@
     switchAlbum(id, button.dataset.side === "left" ? "prev" : "next");
   }
 
-  function rememberTransition(direction, id) {
+  function rememberTransition(direction, id, autoplay = true) {
     const payload = {
       direction,
       id,
+      autoplay,
       skin: document.body.dataset.skin || "stamp",
       at: Date.now()
     };
@@ -190,10 +316,24 @@
     return curtain;
   }
 
+  function primePendingTransition(pending) {
+    if (!pending) return;
+    state.switching = true;
+    document.body.dataset.albumSwitchDirection = pending.direction || "next";
+    document.body.classList.add("is-album-switch-loading");
+    ensureCurtain(pending.direction || "next", true);
+    const welcome = $("#welcome");
+    if (welcome) {
+      welcome.style.opacity = "0";
+      welcome.style.visibility = "hidden";
+      welcome.style.pointerEvents = "none";
+    }
+  }
+
   async function switchAlbum(id, direction = "next") {
     if (!id || state.switching || id === state.library?.currentId) return;
     state.switching = true;
-    const pending = rememberTransition(direction, id);
+    const pending = rememberTransition(direction, id, true);
     const curtain = ensureCurtain(direction, false);
     document.body.classList.add("is-album-exiting");
     requestAnimationFrame(() => requestAnimationFrame(() => curtain.classList.add("is-covering")));
@@ -343,7 +483,7 @@
         nextLibrary = await response.json();
       }
       if (id === state.library.currentId && nextLibrary.currentId) {
-        rememberTransition("next", nextLibrary.currentId);
+        rememberTransition("next", nextLibrary.currentId, true);
         const url = new URL(location.href);
         url.searchParams.set("imported", "1");
         location.replace(url.toString());
@@ -411,10 +551,25 @@
     }
   }
 
+  function startFirstTrackAfterAlbumSwitch(pending) {
+    if (!pending?.autoplay || !isAndroidLibrary || !window.Melodio?.togglePlay) return;
+    window.setTimeout(() => {
+      if (document.body.classList.contains("is-playing")) return;
+      try { window.Melodio.togglePlay(); } catch (_) {}
+    }, 70);
+  }
+
   function completePendingEntry(pending) {
     const curtain = ensureCurtain(pending.direction || "next", true);
     document.body.classList.remove("is-album-switch-loading");
+    const welcome = $("#welcome");
+    if (welcome) {
+      welcome.style.removeProperty("opacity");
+      welcome.style.removeProperty("visibility");
+      welcome.style.removeProperty("pointer-events");
+    }
     document.body.classList.add("is-album-entering");
+    startFirstTrackAfterAlbumSwitch(pending);
     requestAnimationFrame(() => requestAnimationFrame(() => {
       document.body.classList.add("is-album-entering-ready");
       curtain.classList.add("is-revealing");
@@ -427,13 +582,9 @@
     }, 580);
   }
 
-  function applyPendingTransition() {
-    const pending = readTransition();
+  function applyPendingTransition(pending = readTransition()) {
     if (!pending) return;
-    state.switching = true;
-    document.body.dataset.albumSwitchDirection = pending.direction || "next";
-    document.body.classList.add("is-album-switch-loading");
-    ensureCurtain(pending.direction || "next", true);
+    primePendingTransition(pending);
     if (pending.skin && window.Melodio?.setSkin) {
       try { window.Melodio.setSkin(pending.skin); } catch (_) {}
     }
@@ -458,10 +609,14 @@
     }, 7000);
   }
 
+  installVisualContinuity();
+  const bootPendingTransition = readTransition();
+  if (bootPendingTransition) primePendingTransition(bootPendingTransition);
+
   async function init() {
     installOverviewInterceptors();
     installMotionPolish();
-    applyPendingTransition();
+    applyPendingTransition(bootPendingTransition);
     const library = await fetchLibrary();
     if (!library) return;
     state.library = library;
