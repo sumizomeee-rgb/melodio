@@ -15,6 +15,7 @@
     })();
   </script>
   <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="mobile-polish.css" />
 </head>
 <body data-skin="stamp" data-clean="false">
   <main id="app" class="app" aria-live="polite">
@@ -103,10 +104,8 @@
       </footer>
     </section>
 
-    <!-- 左下/右下隐形热区：点击显隐底部控制面板 -->
     <button id="dockToggleLeft" class="dock-corner dock-corner-left" type="button" aria-label="显示控制面板"></button>
     <button id="dockToggleRight" class="dock-corner dock-corner-right" type="button" aria-label="显示控制面板"></button>
-    <!-- 左上隐形热区：打开专辑信息图全屏查看 -->
     <button id="infoBtn" class="dock-corner dock-corner-top-left" type="button" aria-label="打开专辑信息图"></button>
 
     <aside class="control-dock" aria-label="控制面板">
@@ -150,7 +149,6 @@
       </div>
     </section>
 
-
     <section id="mappingPanel" class="mapping-panel" aria-hidden="true" aria-labelledby="mappingTitle">
       <div class="mapping-card">
         <header class="mapping-header">
@@ -174,7 +172,6 @@
       <span>网页会按文件名前缀自动配对</span>
     </div>
 
-    <!-- 专辑信息图全屏查看：只展示一张大图；无图时提供添加入口，点空白处关闭 -->
     <section id="infoViewer" class="info-viewer" aria-hidden="true" aria-label="专辑信息图">
       <img id="infoViewerImg" class="info-viewer-img" alt="" draggable="false" />
       <button id="infoRemoveBtn" class="info-remove" type="button" aria-label="移除信息图">
@@ -200,5 +197,6 @@
   </main>
 
   <script src="app.js"></script>
+  <script src="album-library.js"></script>
 </body>
 </html>
