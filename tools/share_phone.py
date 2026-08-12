@@ -32,6 +32,7 @@ SERVER_EXT = STATE_ROOT / "melodio-server.ext"
 
 def run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
+    # Git for Windows 自带的 openssl.exe 运行在 MSYS2 环境；禁止把 /CN=... 当路径改写。
     env.setdefault("MSYS2_ARG_CONV_EXCL", "*")
     return subprocess.run(
         cmd,
@@ -44,6 +45,7 @@ def run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[st
 
 
 def find_lan_ip() -> str:
+    # UDP connect 不会真正发包，但能让系统告诉我们默认路由使用的本机地址。
     for target in (("8.8.8.8", 443), ("1.1.1.1", 443)):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -140,8 +142,8 @@ def trust_ca_on_windows() -> None:
         print("[提示] 无法自动把 Melodio CA 加入当前 Windows 用户信任区，本机浏览器可能仍提示证书风险。")
 
 
-def setup_html(lan_ip: str) -> bytes:
-    https_url = f"https://{lan_ip}:{HTTPS_PORT}/"
+def setup_html(lan_ip: str, https_port: int) -> bytes:
+    https_url = f"https://{lan_ip}:{https_port}/"
     body = f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Melodio · 内网安装</title>
@@ -161,6 +163,7 @@ h1{{margin:.1em 0 .35em;font-size:30px}}p{{color:#bdbdc4}}.step{{padding:18px 0;
 
 class SetupHandler(http.server.BaseHTTPRequestHandler):
     lan_ip = "127.0.0.1"
+    https_port = HTTPS_PORT
 
     def log_message(self, fmt: str, *args: object) -> None:
         return
@@ -168,7 +171,7 @@ class SetupHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         path = urlparse(self.path).path
         if path in ("/", "/index.html"):
-            payload = setup_html(self.lan_ip)
+            payload = setup_html(self.lan_ip, self.https_port)
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))
@@ -216,6 +219,16 @@ class PwaHandler(http.server.SimpleHTTPRequestHandler):
         super().do_GET()
 
 
+def make_server(start_port: int, handler: type[http.server.BaseHTTPRequestHandler]) -> tuple[http.server.ThreadingHTTPServer, int]:
+    last_error: OSError | None = None
+    for port in range(start_port, start_port + 40):
+        try:
+            return http.server.ThreadingHTTPServer(("0.0.0.0", port), handler), port
+        except OSError as exc:
+            last_error = exc
+    raise RuntimeError(f"端口 {start_port}-{start_port + 39} 均不可用：{last_error}")
+
+
 def start_server(server: http.server.ThreadingHTTPServer) -> threading.Thread:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -248,11 +261,12 @@ def main() -> int:
 
     SetupHandler.lan_ip = lan_ip
     try:
-        setup_server = http.server.ThreadingHTTPServer(("0.0.0.0", HTTP_PORT), SetupHandler)
-        pwa_server = http.server.ThreadingHTTPServer(("0.0.0.0", HTTPS_PORT), PwaHandler)
-    except OSError as exc:
-        print(f"[错误] 端口 {HTTP_PORT}/{HTTPS_PORT} 启动失败：{exc}")
+        setup_server, http_port = make_server(HTTP_PORT, SetupHandler)
+        pwa_server, https_port = make_server(HTTPS_PORT, PwaHandler)
+    except Exception as exc:
+        print(f"[错误] 局域网端口启动失败：{exc}")
         return 1
+    SetupHandler.https_port = https_port
 
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(certfile=SERVER_CERT, keyfile=SERVER_KEY)
@@ -261,8 +275,8 @@ def main() -> int:
     start_server(setup_server)
     start_server(pwa_server)
 
-    setup_url = f"http://{lan_ip}:{HTTP_PORT}/"
-    pwa_url = f"https://{lan_ip}:{HTTPS_PORT}/"
+    setup_url = f"http://{lan_ip}:{http_port}/"
+    pwa_url = f"https://{lan_ip}:{https_port}/"
     copy_to_clipboard(setup_url)
 
     print()
@@ -278,7 +292,7 @@ def main() -> int:
     print()
 
     try:
-        webbrowser.open(f"https://localhost:{HTTPS_PORT}/")
+        webbrowser.open(f"https://localhost:{https_port}/")
     except Exception:
         pass
 
