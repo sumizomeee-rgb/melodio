@@ -1,0 +1,28 @@
+{
+  "id": "./",
+  "name": "Melodio · Album Showcase",
+  "short_name": "Melodio",
+  "description": "完全离线的横屏专辑试听与视觉展示器",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "display_override": ["fullscreen", "standalone"],
+  "orientation": "landscape",
+  "background_color": "#0b0b0c",
+  "theme_color": "#0b0b0c",
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "./pwa-icon.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "./pwa-icon.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
