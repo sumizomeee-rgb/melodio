@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" rx="112" fill="#0b0b0c"/>
+  <circle cx="256" cy="256" r="166" fill="#18181b" stroke="#e9e1d2" stroke-width="10"/>
+  <circle cx="256" cy="256" r="118" fill="none" stroke="#77716a" stroke-width="3" opacity=".58"/>
+  <circle cx="256" cy="256" r="82" fill="#e9e1d2"/>
+  <circle cx="256" cy="256" r="22" fill="#0b0b0c"/>
+  <path d="M120 204c48-55 91-76 144-78" fill="none" stroke="#f7f2e8" stroke-width="8" stroke-linecap="round" opacity=".82"/>
+  <path d="M372 308c-43 49-86 70-137 75" fill="none" stroke="#f7f2e8" stroke-width="6" stroke-linecap="round" opacity=".42"/>
+  <text x="256" y="468" text-anchor="middle" fill="#e9e1d2" font-family="Arial,Helvetica,sans-serif" font-size="34" font-weight="700" letter-spacing="8">MELODIO</text>
+</svg>
