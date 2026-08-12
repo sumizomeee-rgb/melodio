@@ -210,15 +210,19 @@ html[data-performance="mobile"] .album-edge-rail {
 /* WebView 91: fine stepped vinyl avoids continuous compositor load without visible 48-step jumps. */
 html[data-runtime="android-webview"] .vinyl-disc-spin { animation-timing-function: steps(246, end) !important; }
 
-/* Album scene transition. A full-stage wipe masks the internal reload; no modal/loading card is shown. */
+/* Album scene transition: a directional material wipe masks the internal reload.
+   It deliberately contains no record/circle/placeholder artwork, so there is no
+   third "default album" frame between the outgoing and incoming albums. */
 .album-switch-curtain {
   position: absolute;
   inset: 0;
   z-index: 79;
   pointer-events: none;
   overflow: hidden;
-  transition: transform 300ms cubic-bezier(.62,.02,.22,1);
+  transition: transform 240ms cubic-bezier(.58,.02,.2,1);
   will-change: transform;
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
 }
 body[data-album-switch-direction="next"] .album-switch-curtain { transform: translate3d(100%,0,0); }
 body[data-album-switch-direction="prev"] .album-switch-curtain { transform: translate3d(-100%,0,0); }
@@ -227,32 +231,25 @@ body[data-album-switch-direction="next"] .album-switch-curtain.is-revealing { tr
 body[data-album-switch-direction="prev"] .album-switch-curtain.is-revealing { transform: translate3d(100%,0,0) !important; }
 .album-switch-curtain::before,
 .album-switch-curtain::after {
-  content: "";
-  position: absolute;
-  pointer-events: none;
+  content: none !important;
+  display: none !important;
 }
-.album-switch-curtain::before {
-  top: 6%;
-  bottom: 6%;
-  width: 1px;
-  left: 50%;
-  background: currentColor;
-  opacity: .16;
+body[data-skin="stamp"] .album-switch-curtain {
+  color: #7b493d;
+  background:
+    linear-gradient(102deg, rgba(255,255,255,.10), transparent 24%, rgba(108,69,53,.035) 64%, rgba(255,255,255,.055)),
+    #dfd1b8;
 }
-.album-switch-curtain::after {
-  width: min(46vh, 38vw);
-  aspect-ratio: 1;
-  border-radius: 50%;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%,-50%);
-  border: 1px solid currentColor;
-  box-shadow: inset 0 0 0 12px transparent, 0 0 0 18px rgba(255,255,255,.018), 0 0 0 36px rgba(255,255,255,.012);
-  opacity: .2;
+body[data-skin="film"] .album-switch-curtain {
+  color: #f2b36b;
+  background:
+    linear-gradient(105deg, #0b0a0a 0%, #17100c 27%, #21150e 45%, #100d0b 67%, #090909 100%);
 }
-body[data-skin="stamp"] .album-switch-curtain { color: #7b493d; background: #dfd1b8; }
-body[data-skin="film"] .album-switch-curtain { color: #f2b36b; background: radial-gradient(circle at 30% 30%, #241a13, #0c0b0b 58%); }
-body[data-skin="glass"] .album-switch-curtain { color: #c8f3ef; background: linear-gradient(135deg, #10252d, #111427 72%); }
+body[data-skin="glass"] .album-switch-curtain {
+  color: #c8f3ef;
+  background:
+    linear-gradient(108deg, #0b1820 0%, #10242d 28%, #142b35 46%, #111728 70%, #0b151d 100%);
+}
 
 body.is-album-switch-loading .loading-panel { opacity: 0 !important; pointer-events: none !important; }
 body.is-album-switch-loading .stage-header,
