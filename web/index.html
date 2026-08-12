@@ -12,8 +12,41 @@
       const android = /Android/i.test(navigator.userAgent || "");
       const enabled = mode === "1" || mode === "on" || mode === "mobile" || (mode === "auto" && android);
       document.documentElement.dataset.performance = enabled ? "mobile" : "full";
+
+      // Album switches reload the H5 shell. Mark that navigation before first paint,
+      // so the built-in UNNAMED ALBUM / TRACK 01 skeleton can never flash between
+      // the outgoing and incoming real albums on old Android WebView.
+      try {
+        const raw = sessionStorage.getItem("melodio-album-transition-v3");
+        const pending = raw ? JSON.parse(raw) : null;
+        if (pending && Date.now() - Number(pending.at || 0) <= 12000) {
+          document.documentElement.dataset.albumTransitionBoot = "true";
+          document.documentElement.dataset.albumTransitionSkin = pending.skin || "stamp";
+        }
+      } catch (_) {}
     })();
   </script>
+  <style>
+    /* Critical first-paint guard for album-to-album reloads. This lives in <head>
+       deliberately: runtime-injected styles are too late to prevent a one-frame
+       placeholder flash on WebView 91. */
+    html[data-album-transition-boot="true"] body {
+      background: #0b0b0c;
+    }
+    html[data-album-transition-boot="true"][data-album-transition-skin="stamp"] body { background: #dfd1b8; }
+    html[data-album-transition-boot="true"][data-album-transition-skin="film"] body { background: #090909; }
+    html[data-album-transition-boot="true"][data-album-transition-skin="glass"] body { background: #0b151d; }
+    html[data-album-transition-boot="true"] .stage,
+    html[data-album-transition-boot="true"] #welcome,
+    html[data-album-transition-boot="true"] #loadingPanel,
+    html[data-album-transition-boot="true"] #toast,
+    html[data-album-transition-boot="true"] .control-dock,
+    html[data-album-transition-boot="true"] .dock-corner {
+      opacity: 0 !important;
+      visibility: hidden !important;
+      pointer-events: none !important;
+    }
+  </style>
   <link rel="stylesheet" href="styles.css" />
   <link rel="stylesheet" href="mobile-polish.css" />
 </head>
@@ -221,5 +254,28 @@
 
   <script src="app.js"></script>
   <script src="album-library.js"></script>
+  <script>
+    (() => {
+      if (document.documentElement.dataset.albumTransitionBoot !== "true") return;
+      const releaseBootGuard = () => {
+        if (!document.body.classList.contains("is-album-entering-ready")) return false;
+        delete document.documentElement.dataset.albumTransitionBoot;
+        delete document.documentElement.dataset.albumTransitionSkin;
+        observer.disconnect();
+        return true;
+      };
+      const observer = new MutationObserver(releaseBootGuard);
+      observer.observe(document.body, { attributes: true, attributeFilter: ["class"] });
+      releaseBootGuard();
+      // Broken transitions must never strand the whole player behind the guard.
+      window.setTimeout(() => {
+        if (document.documentElement.dataset.albumTransitionBoot === "true") {
+          delete document.documentElement.dataset.albumTransitionBoot;
+          delete document.documentElement.dataset.albumTransitionSkin;
+          observer.disconnect();
+        }
+      }, 7600);
+    })();
+  </script>
 </body>
 </html>
