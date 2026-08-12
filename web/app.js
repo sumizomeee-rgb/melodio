@@ -1192,9 +1192,10 @@
   }
 
   function cycleMotionMode() {
-    const names = ["柔和", "丰富", "强烈"];
+    const names = ["柔和", "鲜明", "澎湃"];
+    const strengths = [.7, 1, 1.28];
     state.motionMode = (state.motionMode + 1) % names.length;
-    document.documentElement.style.setProperty("--motion", [0.62, 1, 1.38][state.motionMode]);
+    document.documentElement.style.setProperty("--motion", strengths[state.motionMode]);
     els.motionBtn.textContent = `动效：${names[state.motionMode]} M`;
     requestVisualFrame(true);
     showToast(`音频响应动效：${names[state.motionMode]}`);
@@ -2048,11 +2049,11 @@
 
   function updateSpectrumBars(force = false) {
     if (!state.spectrumBars.length) return;
-    const motion = [0.62, 1, 1.38][state.motionMode];
+    const motion = [.7, 1, 1.28][state.motionMode];
     state.spectrumBars.forEach((bar, index) => {
       const value = state.spectrum[index] || 0;
-      const emphasized = clamp((.08 + value * 1.12 + state.levels.impact * .18) * motion, .035, 1.5);
-      const opacity = clamp(.16 + value * .74 + state.levels.flux * .18, .12, .96);
+      const emphasized = clamp((.05 + value * .88 + state.levels.impact * .12) * motion, .03, 1.15);
+      const opacity = clamp(.12 + value * .56 + state.levels.flux * .12, .1, .78);
       const scaleText = emphasized.toFixed(PERFORMANCE.enabled ? 2 : 3);
       const opacityText = opacity.toFixed(PERFORMANCE.enabled ? 2 : 3);
       const cached = PERFORMANCE.barCache[index];
@@ -2065,7 +2066,7 @@
 
   function writeVisualLevels(force = false) {
     const levels = state.levels;
-    const motion = [0.62, 1, 1.38][state.motionMode];
+    const motion = [.7, 1, 1.28][state.motionMode];
     setVisualVariable("--energy", clamp(levels.energy * motion, 0, 1.4), force);
     setVisualVariable("--low", clamp(levels.low * motion, 0, 1.4), force);
     setVisualVariable("--mid", clamp(levels.mid * motion, 0, 1.4), force);
@@ -2176,90 +2177,197 @@
     requestVisualFrame(true);
   }
 
-  function drawWaveform(ctx, w, h, y, amplitude, color, lineWidth = 1) {
+  function smoothWaveSample(progress, radius = 6) {
+    if (!state.timeData || !state.playing) return 0;
     const data = state.timeData;
-    ctx.beginPath();
-    const points = PERFORMANCE.enabled ? 72 : 160;
-    for (let i = 0; i < points; i++) {
-      const x = i / (points - 1) * w;
-      const sample = data && state.playing ? (data[Math.floor(i / points * data.length)] - 128) / 128 : (PERFORMANCE.enabled ? 0 : Math.sin(state.fakePhase * 3 + i * .28) * .18);
-      const py = y + sample * amplitude;
-      i === 0 ? ctx.moveTo(x, py) : ctx.lineTo(x, py);
+    const center = Math.min(data.length - 1, Math.max(0, Math.round(progress * (data.length - 1))));
+    let total = 0;
+    let weightTotal = 0;
+    for (let offset = -radius; offset <= radius; offset++) {
+      const index = Math.min(data.length - 1, Math.max(0, center + offset));
+      const weight = radius + 1 - Math.abs(offset);
+      total += ((data[index] - 128) / 128) * weight;
+      weightTotal += weight;
     }
+    return total / weightTotal;
+  }
+
+  function buildFlowPoints(w, y, amplitude, time, phase = 0, audioMix = 1) {
+    const count = PERFORMANCE.enabled ? 44 : 88;
+    const points = [];
+    for (let i = 0; i < count; i++) {
+      const progress = i / (count - 1);
+      const audio = smoothWaveSample(progress, PERFORMANCE.enabled ? 7 : 5) * audioMix;
+      const drift = Math.sin(progress * Math.PI * 3.2 + time * .00055 + phase) * amplitude * .24;
+      const cross = Math.sin(progress * Math.PI * 6.4 - time * .00034 + phase * 1.6) * amplitude * .045;
+      points.push({ x: progress * w, y: y + audio * amplitude + drift + cross });
+    }
+    return points;
+  }
+
+  function appendSmoothPath(ctx, points, move = true) {
+    if (!points.length) return;
+    if (move) ctx.moveTo(points[0].x, points[0].y);
+    else ctx.lineTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length - 1; i++) {
+      const next = points[i + 1];
+      ctx.quadraticCurveTo(points[i].x, points[i].y, (points[i].x + next.x) * .5, (points[i].y + next.y) * .5);
+    }
+    const last = points[points.length - 1];
+    ctx.lineTo(last.x, last.y);
+  }
+
+  function drawFlowLine(ctx, w, y, amplitude, time, color, lineWidth = 1, phase = 0, audioMix = 1) {
+    const points = buildFlowPoints(w, y, amplitude, time, phase, audioMix);
+    ctx.beginPath();
+    appendSmoothPath(ctx, points);
     ctx.strokeStyle = color;
     ctx.lineWidth = lineWidth;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
     ctx.stroke();
+  }
+
+  function drawFlowRibbon(ctx, w, y, amplitude, thickness, time, topColor, bottomColor, phase = 0, audioMix = 1) {
+    const center = buildFlowPoints(w, y, amplitude, time, phase, audioMix);
+    const upper = center.map((point, index) => ({
+      x: point.x,
+      y: point.y - thickness * (.82 + Math.sin(index * .24 + phase) * .12)
+    }));
+    const lower = center.map((point, index) => ({
+      x: point.x,
+      y: point.y + thickness * (.82 + Math.cos(index * .21 + phase) * .12)
+    })).reverse();
+    ctx.beginPath();
+    appendSmoothPath(ctx, upper);
+    appendSmoothPath(ctx, lower, false);
+    ctx.closePath();
+    const gradient = ctx.createLinearGradient(0, y - amplitude, 0, y + amplitude);
+    gradient.addColorStop(0, topColor);
+    gradient.addColorStop(1, bottomColor);
+    ctx.fillStyle = gradient;
+    ctx.fill();
   }
 
   function drawAmbient(time) {
     const ctx = canvas.ctx;
     const w = canvas.width;
     const h = canvas.height;
-    const { energy, low, mid, high, impact, flux } = state.levels;
+    const raw = state.levels;
+    const strength = [.7, 1, 1.28][state.motionMode];
+    const energy = clamp(raw.energy * strength, 0, 1.15);
+    const low = clamp(raw.low * strength, 0, 1.15);
+    const mid = clamp(raw.mid * strength, 0, 1.15);
+    const high = clamp(raw.high * strength, 0, 1.15);
+    const impact = clamp(raw.impact * strength, 0, 1.2);
+    const flux = clamp(raw.flux * strength, 0, 1.2);
     ctx.clearRect(0, 0, w, h);
     const skin = els.body.dataset.skin;
 
     if (skin === "stamp") {
-      ctx.lineWidth = 1;
-      const rowCount = PERFORMANCE.enabled ? 4 : 7;
-      const lineStep = PERFORMANCE.enabled ? 32 : 14;
+      const wash = ctx.createLinearGradient(0, 0, w, h);
+      wash.addColorStop(0, `rgba(92,55,35,${.012 + energy * .022})`);
+      wash.addColorStop(.58, "rgba(185,74,57,0)");
+      wash.addColorStop(1, `rgba(185,74,57,${.014 + impact * .028})`);
+      ctx.fillStyle = wash;
+      ctx.fillRect(0, 0, w, h);
+
+      ctx.lineWidth = .72 + impact * .16;
+      const rowCount = PERFORMANCE.enabled ? 5 : 7;
+      const lineStep = PERFORMANCE.enabled ? 32 : 20;
       for (let row = 0; row < rowCount; row++) {
         ctx.beginPath();
         for (let x = -20; x <= w + 20; x += lineStep) {
-          const y = h * (.16 + row * .105) + Math.sin(x * .011 + time * .00048 + row) * (8 + low * 58);
+          const progress = clamp(x / w, 0, 1);
+          const sample = smoothWaveSample(progress, 8);
+          const y = h * (.16 + row * .145) +
+            Math.sin(x * .0082 + time * .00046 + row * .88) * (5 + low * 12) +
+            sample * (5 + energy * 9);
           x < 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
         }
-        ctx.strokeStyle = `rgba(91, 58, 40, ${.025 + mid * .09})`;
+        ctx.strokeStyle = `rgba(91,58,40,${.045 + mid * .072 + (row === 2 ? impact * .022 : 0)})`;
         ctx.stroke();
       }
-      drawWaveform(ctx, w, h, h * .73, 26 + energy * 55, `rgba(91,58,40,${.08 + energy * .17})`, 1.2);
-      for (let i = 0; i < 8; i++) {
-        const radius = 34 + i * 16 + impact * 38;
+
+      drawFlowLine(ctx, w, h * .39, 10 + energy * 14, time, `rgba(185,74,57,${.15 + energy * .15})`, 1.02 + impact * .3, .4, .72);
+      drawFlowLine(ctx, w, h * .70, 11 + mid * 16, time, `rgba(91,58,40,${.11 + mid * .12})`, .82 + impact * .18, 2.3, .68);
+
+      for (let i = 0; i < 4; i++) {
+        const radius = 52 + i * 34 + impact * 18;
         ctx.beginPath();
-        ctx.arc(w * .79, h * .2, radius, -.75, 2.25);
-        ctx.strokeStyle = `rgba(168,64,48,${.025 + flux * .07})`;
+        ctx.arc(w * .78, h * .34, radius, -.55, 2.55);
+        ctx.strokeStyle = `rgba(185,74,57,${.024 + flux * .05 + (4 - i) * .007})`;
+        ctx.lineWidth = i === 0 ? 1.25 : .72;
         ctx.stroke();
       }
     } else if (skin === "film") {
-      const gradient = ctx.createRadialGradient(w * .22, h * .26, 0, w * .22, h * .26, w * .54);
-      gradient.addColorStop(0, `rgba(236, 155, 87, ${.04 + energy * .18 + impact * .08})`);
-      gradient.addColorStop(.45, `rgba(100, 72, 53, ${.01 + low * .05})`);
+      const leakX = w * (.20 + Math.sin(time * .00019) * .08);
+      const gradient = ctx.createRadialGradient(leakX, h * .28, 0, leakX, h * .28, w * .68);
+      gradient.addColorStop(0, `rgba(255,171,91,${.055 + energy * .10 + impact * .04})`);
+      gradient.addColorStop(.42, `rgba(187,74,45,${.016 + low * .04})`);
       gradient.addColorStop(1, "rgba(236,155,87,0)");
       ctx.fillStyle = gradient;
       ctx.fillRect(0, 0, w, h);
-      ctx.strokeStyle = `rgba(255,255,255,${.022 + high * .09})`;
-      ctx.lineWidth = .75;
-      const scratchCount = PERFORMANCE.enabled ? 10 : 18;
+
+      const rightLeak = ctx.createRadialGradient(w * .86, h * .68, 0, w * .86, h * .68, w * .48);
+      rightLeak.addColorStop(0, `rgba(255,111,61,${.024 + mid * .055 + impact * .03})`);
+      rightLeak.addColorStop(1, "rgba(255,111,61,0)");
+      ctx.fillStyle = rightLeak;
+      ctx.fillRect(0, 0, w, h);
+
+      ctx.strokeStyle = `rgba(255,244,224,${.022 + high * .06})`;
+      ctx.lineWidth = .62;
+      const scratchCount = PERFORMANCE.enabled ? 8 : 14;
       for (let i = 0; i < scratchCount; i++) {
-        const x = ((i * 137 + time * .022 * (i % 4 + 1)) % (w + 140)) - 70;
+        const x = ((i * 137 + time * .034 * (i % 4 + 1)) % (w + 140)) - 70;
         ctx.beginPath();
         ctx.moveTo(x, 0);
         ctx.lineTo(x + Math.sin(i) * 6, h);
         ctx.stroke();
       }
-      drawWaveform(ctx, w * .94, h, h * .76, 34 + mid * 68, `rgba(244,239,231,${.09 + energy * .2})`, 1.3);
-      if (impact > .18) {
-        ctx.fillStyle = `rgba(255,190,113,${impact * .08})`;
-        ctx.fillRect(0, 0, w, h);
+
+      drawFlowRibbon(ctx, w, h * .73, 14 + mid * 20, 3 + energy * 3, time,
+        `rgba(255,179,105,${.09 + energy * .09})`, "rgba(111,36,24,0)", 1.1, .72);
+      drawFlowLine(ctx, w, h * .40, 9 + high * 14, time, `rgba(255,212,160,${.14 + high * .16})`, 1 + impact * .28, 2.6, .66);
+      drawFlowLine(ctx, w, h * .78, 8 + mid * 12, time, `rgba(201,92,60,${.085 + energy * .10})`, .78, .9, .62);
+      if (impact > .42) {
+        const flashX = ((time * .38) % (w + 220)) - 110;
+        const flash = ctx.createLinearGradient(flashX - 110, 0, flashX + 110, 0);
+        flash.addColorStop(0, "rgba(255,190,113,0)");
+        flash.addColorStop(.5, `rgba(255,190,113,${impact * .04})`);
+        flash.addColorStop(1, "rgba(255,190,113,0)");
+        ctx.fillStyle = flash;
+        ctx.fillRect(flashX - 110, 0, 220, h);
       }
     } else {
-      const cx = w * .27;
-      const cy = h * .7;
-      const ringCount = PERFORMANCE.enabled ? 5 : 8;
-      for (let ring = 0; ring < ringCount; ring++) {
-        ctx.beginPath();
-        const radius = 54 + ring * 45 + low * 110 + Math.sin(time * .00055 + ring) * 5;
-        ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-        ctx.strokeStyle = `rgba(169, 237, 226, ${.022 + (ringCount - ring) * .005 + mid * .08})`;
-        ctx.lineWidth = 1 + impact * .7;
-        ctx.stroke();
+      const glow = ctx.createLinearGradient(0, 0, w, h);
+      glow.addColorStop(0, `rgba(64,205,197,${.02 + low * .04})`);
+      glow.addColorStop(.46, `rgba(90,177,206,${.014 + energy * .032})`);
+      glow.addColorStop(1, `rgba(143,101,230,${.02 + mid * .045})`);
+      ctx.fillStyle = glow;
+      ctx.fillRect(0, 0, w, h);
+
+      const ringCount = PERFORMANCE.enabled ? 4 : 6;
+      for (let center = 0; center < 2; center++) {
+        const cx = w * (center ? .79 : .25);
+        const cy = h * (center ? .37 : .73);
+        const visibleRings = center ? ringCount : Math.max(2, ringCount - 2);
+        for (let ring = 0; ring < visibleRings; ring++) {
+          ctx.beginPath();
+          const radius = 54 + ring * 42 + low * 46 + Math.sin(time * .00055 + ring + center) * 5;
+          ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+          ctx.strokeStyle = center
+            ? `rgba(154,132,245,${.016 + (visibleRings - ring) * .005 + mid * .04})`
+            : `rgba(169,237,226,${.018 + (visibleRings - ring) * .006 + low * .045})`;
+          ctx.lineWidth = .7 + impact * .35;
+          ctx.stroke();
+        }
       }
-      drawWaveform(ctx, w, h, h * .52, 38 + energy * 82, `rgba(190,245,238,${.075 + energy * .18})`, 1.2);
       for (const particle of canvas.particles) {
-        const x = particle.x * w + Math.sin(time * .00025 + particle.p) * (18 + mid * 34);
-        const y = particle.y * h + Math.cos(time * .00019 + particle.p) * (15 + low * 28);
-        const size = particle.s * (1 + high * 3.4 + impact * 1.8);
-        ctx.fillStyle = `rgba(211,255,248,${.045 + high * .16})`;
+        const x = (particle.x * w + time * (.0035 + particle.s * .003) + Math.sin(time * .00028 + particle.p) * (14 + mid * 22)) % (w + 24) - 12;
+        const y = particle.y * h + Math.cos(time * .00025 + particle.p) * (12 + low * 20);
+        const size = particle.s * (.7 + high * 2.2 + impact * .8);
+        ctx.fillStyle = `rgba(218,255,250,${.045 + high * .12})`;
         ctx.beginPath();
         ctx.arc(x, y, size, 0, Math.PI * 2);
         ctx.fill();
@@ -2414,6 +2522,13 @@
     // 点击控制面板自身的黑色背景(非按钮区域)也关闭面板
     els.controlDock?.addEventListener("click", (event) => {
       if (event.target instanceof Element && !event.target.closest("button")) toggleDock(false);
+    });
+    // 控制栏展开时，点击舞台上的任意其他区域也将其收起；
+    // 不阻断原点击，因此封面播放、曲目选择和专辑切换仍会照常执行。
+    document.addEventListener("click", (event) => {
+      if (!state.dockVisible || !(event.target instanceof Element)) return;
+      if (event.target.closest(".control-dock, #dockToggleLeft, #dockToggleRight")) return;
+      toggleDock(false);
     });
 
     els.trackList?.addEventListener("click", (event) => {
