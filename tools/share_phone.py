@@ -78,16 +78,52 @@ def find_openssl() -> str:
     found = shutil.which("openssl")
     if found:
         return found
-    candidates = [
-        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git" / "usr" / "bin" / "openssl.exe",
-        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git" / "mingw64" / "bin" / "openssl.exe",
-        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Git" / "usr" / "bin" / "openssl.exe",
-    ]
-    for candidate in candidates:
-        if candidate.is_file():
-            return str(candidate)
+
+    candidates: list[Path] = []
+
+    def add(candidate: Path) -> None:
+        if candidate.is_file() and candidate not in candidates:
+            candidates.append(candidate)
+
+    # 从 PATH 上的 git.exe 反推 Git 安装根：无论 Git 装在哪个盘、以哪种方式暴露，
+    # usr/bin 或 mingw64/bin 一定在根下。Scoop 的 current junction 由 resolve() 解开。
+    # 向上爬 5 层，覆盖 cmd/、bin/、usr/bin/ 等各种 git.exe 布局。
+    git = shutil.which("git")
+    if git:
+        root = Path(git).resolve().parent
+        for _ in range(5):
+            add(root / "usr" / "bin" / "openssl.exe")
+            add(root / "mingw64" / "bin" / "openssl.exe")
+            root = root.parent
+
+    # PATH 里没有 git 时，按 Scoop 约定枚举（SCOOP / SCOOP_GLOBAL 环境变量或默认目录）。
+    for scoop_root in (
+        os.environ.get("SCOOP"),
+        os.environ.get("SCOOP_GLOBAL"),
+        str(Path.home() / "scoop"),
+    ):
+        if not scoop_root:
+            continue
+        root = Path(scoop_root) / "apps" / "git" / "current"
+        add(root / "usr" / "bin" / "openssl.exe")
+        add(root / "mingw64" / "bin" / "openssl.exe")
+
+    # 常见安装位置：标准安装、用户级安装、Chocolatey、独立 MSYS2。
+    pf = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+    pf86 = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"))
+    local = Path(os.environ.get("LocalAppData", str(Path.home()))) / "Programs"
+    for root in (pf / "Git", pf86 / "Git", local / "Git"):
+        add(root / "usr" / "bin" / "openssl.exe")
+        add(root / "mingw64" / "bin" / "openssl.exe")
+        add(root / "bin" / "openssl.exe")  # 早期 Git 布局
+    add(Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "chocolatey" / "bin" / "openssl.exe")
+    add(Path(os.environ.get("SystemDrive", "C:") + os.sep) / "msys64" / "usr" / "bin" / "openssl.exe")
+
+    if candidates:
+        return str(candidates[0])
     raise RuntimeError(
-        "未找到 OpenSSL。安装 Git for Windows 后通常会自带 OpenSSL，或把 openssl.exe 加入 PATH。"
+        "未找到 OpenSSL。已检查 PATH、Git for Windows 常见布局（标准安装 / Scoop / Chocolatey / MSYS2）"
+        "均无结果，请安装 Git for Windows 或把 openssl.exe 加入 PATH。"
     )
 
 

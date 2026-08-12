@@ -20,3 +20,6 @@ app/src/main/assets/www/assets/audio/
 # ===== 专辑素材一律不入库、不打进 APK（外部导入） =====
 app/src/main/assets/www/assets/
 web/assets/
+
+# ===== Python 缓存 =====
+__pycache__/
